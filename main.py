@@ -124,14 +124,14 @@ def login_form():
         if (user_id == LOGIN_ID_ENV) and (user_pw == LOGIN_PW_ENV):
             st.session_state.logged_in = True
             st.success("로그인 성공!")
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.error("아이디 또는 비밀번호가 잘못되었습니다.")
 
 def logout_button():
     if st.sidebar.button("로그아웃", use_container_width=True):
         st.session_state.logged_in = False
-        st.experimental_rerun()
+        st.rerun()
 
 # -----------------------------
 # API 키 설정 (secrets 기반)
