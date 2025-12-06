@@ -25,14 +25,14 @@ st.set_page_config(
 # 상단 여백 조정 + DataEditor 아이콘(3점 메뉴 등) 숨기기
 st.markdown(
     """
-    <style>
-    .block-container { padding-top: 3rem !important; }
-    /* DataEditor 내 아이콘 버튼(3점 메뉴 등) 숨기기 */
-    [data-testid="stDataFrame"] button[kind="icon"] {
-        display: none !important;
-    }
-    </style>
-    """,
+<style>
+.block-container { padding-top: 3rem !important; }
+/* DataEditor 내 아이콘 버튼(3점 메뉴 등) 숨기기 */
+[data-testid="stDataFrame"] button[kind="icon"] {
+    display: none !important;
+}
+</style>
+""",
     unsafe_allow_html=True,
 )
 
@@ -47,10 +47,8 @@ st.session_state.setdefault("login_id", LOGIN_ID_ENV or "")
 st.session_state.setdefault("login_pw", LOGIN_PW_ENV or "")
 
 def check_login(id_text: str, pw_text: str) -> bool:
-    # 환경변수에 값이 있으면 그것과 비교
     if LOGIN_ID_ENV and LOGIN_PW_ENV:
         return (id_text == LOGIN_ID_ENV) and (pw_text == LOGIN_PW_ENV)
-    # 환경변수가 비어 있으면 그냥 통과(개발용)
     return True
 
 if not st.session_state["logged_in"]:
@@ -142,7 +140,7 @@ def _save_json(filename: str, data):
         st.warning(f"Supabase 저장 오류({filename}): {e}")
 
 # -----------------------------
-# 경로/파일명 정의 (Supabase용)
+# 경로/파일명 정의
 # -----------------------------
 KEYWORD_LOG_PATH  = "yts_keyword_log.json"
 QUOTA_PATH        = "yts_quota_usage.json"
@@ -151,11 +149,6 @@ QUOTA_PATH        = "yts_quota_usage.json"
 # API 키: secrets에서만 사용
 # -----------------------------
 def get_current_api_key() -> str:
-    """
-    우선순위:
-    1) YOUTUBE_API_KEYS (리스트 또는 줄바꿈 문자열) 의 첫 번째
-    2) YOUTUBE_API_KEY (단일 문자열)
-    """
     keys = st.secrets.get("YOUTUBE_API_KEYS")
     if isinstance(keys, list) and keys:
         return str(keys[0]).strip()
@@ -313,7 +306,7 @@ def parse_min_views(text: str) -> int:
         return 0
 
 # -----------------------------
-# 등급 계산 (시간당 클릭수 기준, A~H)
+# 등급 계산 (A~H)
 # -----------------------------
 def calc_grade(clicks_per_hour: int) -> str:
     v = clicks_per_hour
@@ -327,7 +320,7 @@ def calc_grade(clicks_per_hour: int) -> str:
     return "H"
 
 # -----------------------------
-# YouTube API 호출 함수들
+# YouTube API 호출 함수
 # -----------------------------
 def search_videos(
     query: str,
@@ -338,7 +331,6 @@ def search_videos(
     region_code: str | None,
     lang_code: str | None,
 ):
-    """일반 키워드로 영상 검색"""
     youtube = get_youtube_client()
     published_after = published_after_from_label(api_period_label)
 
@@ -441,7 +433,6 @@ def search_channels_by_keyword(
     region_code: str | None,
     lang_code: str | None,
 ):
-    """채널 키워드로 채널 목록 검색 (채널 아이콘 썸네일까지)"""
     youtube = get_youtube_client()
     take = max(1, min(max_results, 50))
     kwargs = dict(
@@ -502,7 +493,7 @@ def search_channels_by_keyword(
             "total_views": total_views,
             "videos": videos,
             "url": url,
-            "thumbnail_url": thumb_url,  # 채널 아이콘
+            "thumbnail_url": thumb_url,
         })
 
     results.sort(key=lambda r: (r["subs"] or 0), reverse=True)
@@ -517,13 +508,11 @@ def search_videos_in_channel_by_name(
     region_code: str | None,
     lang_code: str | None,
 ):
-    """채널 이름으로 채널을 찾고, 해당 채널의 영상들을 검색"""
     youtube = get_youtube_client()
     published_after = published_after_from_label(api_period_label)
     cost_used = 0
     breakdown = {"search.list": 0, "videos.list": 0}
 
-    # 1) 채널 ID 찾기
     kwargs_ch = dict(
         q=channel_name,
         part="id,snippet",
@@ -547,7 +536,6 @@ def search_videos_in_channel_by_name(
 
     channel_id = items[0]["id"]["channelId"]
 
-    # 2) 해당 채널 영상 검색
     max_fetch = max(1, min(int(max_fetch or 100), 5000))
     results_tmp = []
     next_token = None
@@ -643,10 +631,6 @@ def search_trending_videos(
     max_results: int,
     region_code: str | None,
 ):
-    """
-    단순 트렌드(인기 동영상) 가져오기.
-    YouTube Data API: videos().list(chart="mostPopular")
-    """
     youtube = get_youtube_client()
     take = max(1, min(max_results, 50))
     kwargs = dict(
@@ -705,7 +689,7 @@ st.sidebar.header("검색")
 # 공통 검색어
 search_query = st.sidebar.text_input("검색어", "")
 
-# 검색 버튼 4개 (2행 2열)
+# 검색 버튼 4개
 row1_col1, row1_col2 = st.sidebar.columns(2)
 row2_col1, row2_col2 = st.sidebar.columns(2)
 
@@ -720,7 +704,7 @@ with row2_col2:
 
 st.sidebar.markdown("---")
 
-# 보기 모드 (라디오) - 기본값: 그리드 뷰
+# 보기 모드
 view_mode_label = st.sidebar.radio(
     "보기 모드",
     options=["그리드 뷰", "리스트 뷰", "쇼츠 뷰"],
@@ -740,8 +724,6 @@ st.session_state.setdefault("sort_key", "등급")
 st.session_state.setdefault("sort_asc", True)
 
 with st.sidebar.expander("정렬 방식", expanded=False):
-    # 모드에 따라 쓸 수 있는 컬럼이 다르지만,
-    # 우선 공통 후보를 보여주고 나중에 실제 DF에 맞춰 조정.
     sort_key = st.selectbox(
         "정렬 기준",
         ["등급", "영상조회수", "시간당클릭", "업로드시각", "구독자수", "채널조회수", "채널영상수"],
@@ -803,9 +785,8 @@ status_placeholder = st.empty()
 if "results_df" not in st.session_state:
     st.session_state.results_df = None
     st.session_state.last_search_time = None
-    st.session_state.search_mode = None  # "general", "trend", "channel_videos", "channel_list"
+    st.session_state.search_mode = None
 
-# 클라이언트 필터
 def apply_client_filters(df: pd.DataFrame, upload_period: str, min_views_label: str) -> pd.DataFrame:
     if upload_period != "제한없음" and "업로드시각" in df.columns:
         days = int(upload_period.replace("일",""))
@@ -816,21 +797,18 @@ def apply_client_filters(df: pd.DataFrame, upload_period: str, min_views_label: 
         df = df[df["영상조회수"] >= min_views]
     return df
 
-# 정렬 적용 함수
 def sort_dataframe(df: pd.DataFrame, mode: str, sort_key: str, ascending: bool) -> pd.DataFrame:
     if df is None or df.empty:
         return df
     if sort_key not in df.columns:
-        # 모드별 기본값 재설정
         if mode in ("general", "trend", "channel_videos"):
             key_fallback = "등급" if "등급" in df.columns else None
-        else:  # channel_list
+        else:
             key_fallback = "구독자수" if "구독자수" in df.columns else None
         if not key_fallback:
             return df
         sort_key = key_fallback
 
-    # 등급 (A~H) 정렬
     if sort_key == "등급":
         order = ["A","B","C","D","E","F","G","H"]
         cat = pd.Categorical(df["등급"], categories=order, ordered=True)
@@ -838,7 +816,6 @@ def sort_dataframe(df: pd.DataFrame, mode: str, sort_key: str, ascending: bool) 
         df = df.sort_values("_grade_cat", ascending=ascending, kind="mergesort")
         return df.drop(columns=["_grade_cat"])
 
-    # 숫자형 컬럼들
     if sort_key in ["영상조회수","시간당클릭"]:
         return df.sort_values(sort_key, ascending=ascending, kind="mergesort")
 
@@ -846,14 +823,12 @@ def sort_dataframe(df: pd.DataFrame, mode: str, sort_key: str, ascending: bool) 
         return df.sort_values("업로드시각", ascending=ascending, kind="mergesort")
 
     if sort_key in ["구독자수","채널조회수","채널영상수"]:
-        # 문자열에 콤마 포함된 상태 → 숫자로 변환 후 정렬
         tmp = df[sort_key].astype(str).str.replace(",","").str.replace(" ","")
         num = pd.to_numeric(tmp, errors="coerce").fillna(0)
         df = df.assign(_num=num)
         df = df.sort_values("_num", ascending=ascending, kind="mergesort")
         return df.drop(columns=["_num"])
 
-    # 그 외는 문자열 정렬
     return df.sort_values(sort_key, ascending=ascending, kind="mergesort")
 
 # -----------------------------
@@ -873,7 +848,7 @@ try:
     if mode_triggered is not None:
         search_dt = datetime.now(KST)
 
-        # ------ 일반 검색 ------
+        # 일반 검색
         if mode_triggered == "general":
             base_query = (search_query or "").strip()
             if not base_query:
@@ -922,17 +897,16 @@ try:
                     st.session_state.last_search_time = search_dt
                     st.session_state.search_mode = "general"
                     status_placeholder.success(
-                        f"[일반 검색] 서버 결과: {len(raw_results):,}건 / "
-                        f"필터 후: {len(df):,}건 (이번 쿼터 사용량: {cost_used})"
+                        f"[일반 검색] 서버 결과: {len(raw_results):,}건 / 필터 후: {len(df):,}건 (이번 쿼터 사용량: {cost_used})"
                     )
 
-        # ------ 트렌드 검색 ------
+        # 트렌드 검색
         elif mode_triggered == "trend":
             append_keyword_log("[trend]")
             status_placeholder.info("트렌드 검색 실행 중...")
             raw_results, cost_used, breakdown = search_trending_videos(
                 max_results=max_fetch,
-                region_code=region_code,   # 세부필터의 국가 사용
+                region_code=region_code,
             )
             add_quota_usage(cost_used)
 
@@ -969,7 +943,7 @@ try:
                     f"[트렌드 검색] 결과: {len(df):,}건 (이번 쿼터 사용량: {cost_used})"
                 )
 
-        # ------ 채널영상검색 ------
+        # 채널 영상 검색
         elif mode_triggered == "channel_videos":
             ch_name = (search_query or "").strip()
             if not ch_name:
@@ -1018,11 +992,10 @@ try:
                     st.session_state.last_search_time = search_dt
                     st.session_state.search_mode = "channel_videos"
                     status_placeholder.success(
-                        f"[채널 영상 검색] 서버 결과: {len(raw_results):,}건 / "
-                        f"필터 후: {len(df):,}건 (이번 쿼터 사용량: {cost_used})"
+                        f"[채널 영상 검색] 서버 결과: {len(raw_results):,}건 / 필터 후: {len(df):,}건 (이번 쿼터 사용량: {cost_used})"
                     )
 
-        # ------ 키워드채널검색 ------
+        # 키워드 채널 검색
         elif mode_triggered == "channel_list":
             ch_kw = (search_query or "").strip()
             if not ch_kw:
@@ -1048,7 +1021,7 @@ try:
                         subs = r["subs"]
                         subs_text = f"{subs:,}" if isinstance(subs, int) else "-"
                         df_rows.append({
-                            "썸네일": r.get("thumbnail_url", ""),  # 채널 아이콘
+                            "썸네일": r.get("thumbnail_url", ""),
                             "채널명": r["channel_title"],
                             "구독자수": subs_text,
                             "채널조회수": f"{r['total_views']:,}",
@@ -1068,7 +1041,7 @@ except Exception as e:
     st.session_state.results_df = None
 
 # -----------------------------
-# 결과 표시 (리스트 / 그리드 / 쇼츠)
+# 결과 표시
 # -----------------------------
 df = st.session_state.results_df
 mode = st.session_state.search_mode
@@ -1076,13 +1049,11 @@ mode = st.session_state.search_mode
 if df is None or df.empty:
     st.info("아직 검색 결과가 없습니다. 좌측에서 조건을 설정하고 버튼을 눌러 검색하세요.")
 else:
-    # URL 컬럼 이름 정리
     df_display = df.copy()
     if "링크URL" in df_display.columns:
         df_display["링크"] = df_display["링크URL"]
         df_display = df_display.drop(columns=["링크URL"])
 
-    # 정렬 적용
     df_display = sort_dataframe(
         df_display,
         mode=mode or "",
@@ -1090,7 +1061,6 @@ else:
         ascending=st.session_state["sort_asc"],
     )
 
-    # 모드별 제목
     if mode == "general":
         st.subheader("📊 일반 검색 결과 리스트")
     elif mode == "trend":
@@ -1102,9 +1072,8 @@ else:
     else:
         st.subheader("📊 검색 결과 리스트")
 
-    # ---------- 쇼츠 뷰 ----------
+    # 쇼츠 뷰
     if view_mode == "shorts":
-        # 영상 계열(일반/트렌드/채널영상): 9:16 썸네일
         if mode in ("general", "trend", "channel_videos"):
             thumbs = df_display["썸네일"].astype(str).tolist()
             html_items = []
@@ -1112,44 +1081,19 @@ else:
                 if not url:
                     continue
                 html_items.append(
-                    f"""
-                    <div class="shorts-item">
-                        <img src="{url}" class="shorts-img"/>
-                    </div>
-                    """
+                    f'<div class="shorts-item"><img src="{url}" class="shorts-img"/></div>'
                 )
-            html = """
-            <style>
-            .shorts-container {
-                display: flex;
-                flex-wrap: wrap;
-                justify-content: center;
-                gap: 4px;
-            }
-            .shorts-item {
-                flex: 0 0 32%%;
-                max-width: 150px;
-            }
-            .shorts-img {
-                width: 100%%;
-                aspect-ratio: 9 / 16;
-                object-fit: cover;
-                border-radius: 8px;
-                display: block;
-            }
-            @media (max-width: 480px) {
-                .shorts-item {
-                    flex: 0 0 32%%;
-                }
-            }
-            </style>
-            <div class="shorts-container">
-                %s
-            </div>
-            """ % ("\n".join(html_items))
+            html = (
+                "<style>"
+                ".shorts-container {display:flex;flex-wrap:wrap;justify-content:center;gap:4px;}"
+                ".shorts-item {flex:0 0 32%;max-width:150px;}"
+                ".shorts-img {width:100%;aspect-ratio:9/16;object-fit:cover;border-radius:8px;display:block;}"
+                "@media (max-width:480px){.shorts-item{flex:0 0 32%;}}"
+                "</style>"
+                f'<div class="shorts-container">{"".join(html_items)}</div>'
+            )
             st.markdown(html, unsafe_allow_html=True)
 
-        # 채널 목록 모드: 100x100 아이콘 그리드
         elif mode == "channel_list":
             thumbs = df_display["썸네일"].astype(str).tolist()
             html_items = []
@@ -1157,64 +1101,33 @@ else:
                 if not url:
                     continue
                 html_items.append(
-                    f"""
-                    <div class="shorts-item">
-                        <img src="{url}" class="channel-icon"/>
-                    </div>
-                    """
+                    f'<div class="shorts-item"><img src="{url}" class="channel-icon"/></div>'
                 )
-            html = """
-            <style>
-            .shorts-container {
-                display: flex;
-                flex-wrap: wrap;
-                justify-content: center;
-                gap: 6px;
-            }
-            .shorts-item {
-                flex: 0 0 22%%;
-                max-width: 100px;
-            }
-            .channel-icon {
-                width: 100px;
-                height: 100px;
-                object-fit: cover;
-                border-radius: 50%%;
-                display: block;
-            }
-            @media (max-width: 480px) {
-                .shorts-item {
-                    flex: 0 0 25%%;
-                }
-                .channel-icon {
-                    width: 80px;
-                    height: 80px;
-                }
-            }
-            </style>
-            <div class="shorts-container">
-                %s
-            </div>
-            """ % ("\n".join(html_items))
+            html = (
+                "<style>"
+                ".shorts-container {display:flex;flex-wrap:wrap;justify-content:center;gap:6px;}"
+                ".shorts-item {flex:0 0 22%;max-width:100px;}"
+                ".channel-icon {width:100px;height:100px;object-fit:cover;border-radius:50%;display:block;}"
+                "@media (max-width:480px){.shorts-item{flex:0 0 25%;}"
+                ".channel-icon{width:80px;height:80px;}}"
+                "</style>"
+                f'<div class="shorts-container">{"".join(html_items)}</div>'
+            )
             st.markdown(html, unsafe_allow_html=True)
 
         st.caption("쇼츠 뷰: 이미지를 눌러도 별도 동작은 하지 않습니다.")
-    # ---------- 그리드 뷰 ----------
-    elif view_mode == "grid":
-        if mode == "channel_list":
-            n_cols = 3
-        else:
-            n_cols = 3
 
+    # 그리드 뷰
+    elif view_mode == "grid":
+        n_cols = 3
         cols = st.columns(n_cols)
 
         for idx, (_, row) in enumerate(df_display.iterrows()):
             col = cols[idx % n_cols]
             with col:
-                # 썸네일/아이콘
                 if "썸네일" in df_display.columns and isinstance(row["썸네일"], str) and row["썸네일"]:
-                    st.image(row["썸네일"], use_column_width=True)
-                # 텍스트 정보
+                    st.image(row["썸네일"], use_container_width=True)
+
                 if mode == "channel_list":
                     title = row.get("채널명", "")
                     subs = row.get("구독자수", "")
@@ -1241,9 +1154,8 @@ else:
 
         st.caption("👉 텍스트 링크를 눌러 새 탭에서 영상 또는 채널을 열 수 있습니다.")
 
-    # ---------- 리스트 뷰 ----------
-    else:  # view_mode == "list"
-        # 컬럼 순서
+    # 리스트 뷰
+    else:
         if mode in ("general", "trend", "channel_videos"):
             base_order = [
                 "등급",
@@ -1268,7 +1180,6 @@ else:
             ]
         column_order = [c for c in base_order if c in df_display.columns]
 
-        # 컬럼 설정
         column_config = {}
         if "링크" in df_display.columns:
             column_config["링크"] = st.column_config.LinkColumn(
@@ -1282,7 +1193,6 @@ else:
                 width="small",
             )
 
-        # 모드별 key (정렬/눈아이콘 상태 분리)
         if mode == "general":
             editor_key = "video_results_editor_general"
         elif mode == "trend":
@@ -1297,27 +1207,25 @@ else:
         st.data_editor(
             df_display,
             use_container_width=True,
-            height=620,           # ✅ 더 많은 행 보이도록 높이 증가
+            height=620,
             hide_index=True,
             column_order=column_order if column_order else None,
             column_config=column_config,
             key=editor_key,
-            disabled=True,        # 편집 불가
-            num_rows="fixed",     # 행 추가/삭제 불가
+            disabled=True,
+            num_rows="fixed",
         )
 
         st.caption("👉 '열기' 링크를 누르면 새 탭에서 영상 또는 채널이 열립니다.")
 
 # -----------------------------
-# 사이드바 하단: 쿼터 / 최근 키워드 / 로그아웃
+# 사이드바 하단
 # -----------------------------
 st.sidebar.markdown("---")
 
-# 오늘 사용한 쿼터 (작게)
 quota_today = get_today_quota_total()
 st.sidebar.caption(f"오늘 사용 쿼터: {quota_today:,} units")
 
-# 최근 키워드 (최대 7개, 날짜 없이)
 recents = get_recent_keywords(7)
 if recents:
     keywords = [q for _, q in recents]
@@ -1326,7 +1234,6 @@ if recents:
 else:
     st.sidebar.caption("최근 키워드: 없음")
 
-# 로그아웃 버튼
 if st.sidebar.button("로그아웃", use_container_width=True):
     st.session_state["logged_in"] = False
     st.rerun()
