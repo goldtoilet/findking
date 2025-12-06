@@ -115,7 +115,6 @@ def get_current_api_key() -> str:
     if isinstance(keys, list) and keys:
         return str(keys[0]).strip()
     if isinstance(keys, str) and keys.strip():
-        # 줄바꿈으로 여러 개 들어있다면 첫 줄 사용
         first = keys.strip().splitlines()[0]
         return first.strip()
 
@@ -408,7 +407,7 @@ def search_channels_by_keyword(
     region_code: str | None,
     lang_code: str | None,
 ):
-    """채널 키워드로 채널 목록 검색"""
+    """채널 키워드로 채널 목록 검색 (채널 아이콘 썸네일까지)"""
     youtube = get_youtube_client()
     take = max(1, min(max_results, 50))
     kwargs = dict(
@@ -454,12 +453,22 @@ def search_channels_by_keyword(
         total_views = int(stt.get("viewCount", 0))
         videos = int(stt.get("videoCount", 0))
         url = f"https://www.youtube.com/channel/{cid}" if cid else ""
+
+        thumbs = sn.get("thumbnails", {}) or {}
+        thumb_url = (
+            (thumbs.get("high") or {}).get("url")
+            or (thumbs.get("medium") or {}).get("url")
+            or (thumbs.get("default") or {}).get("url")
+            or ""
+        )
+
         results.append({
             "channel_title": sn.get("title", ""),
             "subs": subs,
             "total_views": total_views,
             "videos": videos,
             "url": url,
+            "thumbnail_url": thumb_url,  # 채널 아이콘
         })
 
     results.sort(key=lambda r: (r["subs"] or 0), reverse=True)
@@ -659,31 +668,28 @@ def search_trending_videos(
 # -----------------------------
 st.sidebar.header("검색")
 
-# ① 일반 검색어
+# ① 일반 검색어 + 버튼
 general_query = st.sidebar.text_input("🔍 일반 검색어", "")
+do_general_search = st.sidebar.button("일반 검색 실행", type="primary", use_container_width=True)
 
 # ✅ 썸네일 보기 옵션 (기본 해제)
 show_thumbnails = st.sidebar.checkbox("썸네일 보기", value=False)
 
 st.sidebar.markdown("---")
 
-# ② 트렌드 검색 (단순 인기 동영상)
-with st.sidebar.expander("🔥 트렌드 검색 (인기 동영상)", expanded=False):
+# ② 트렌드 검색 (인기 동영상)
+with st.sidebar.expander("🔥 트렌드 검색", expanded=False):
     trend_region_name = st.selectbox(
         "트렌드 지역 (국가)",
         COUNTRY_LIST,
         index=0,
         key="trend_region",
     )
-    trend_max = st.number_input(
-        "가져올 개수",
-        1, 50, 20, step=5,
-        key="trend_max",
-    )
+    # 개수는 세부필터의 max_fetch 사용
     do_trend_search = st.button("트렌드 불러오기", use_container_width=True, key="btn_trend")
 
-# ③ 채널 이름으로 해당 채널의 영상 검색
-with st.sidebar.expander("🎬 채널 이름으로 영상 검색", expanded=False):
+# ③ 채널영상검색 (채널 이름으로 영상 검색)
+with st.sidebar.expander("🎬 채널영상검색", expanded=False):
     channel_name_for_videos = st.text_input("채널 이름", key="channel_name_videos")
     do_channel_videos_search = st.button(
         "채널 영상 검색 실행",
@@ -691,14 +697,10 @@ with st.sidebar.expander("🎬 채널 이름으로 영상 검색", expanded=Fals
         key="btn_channel_videos"
     )
 
-# ④ 채널 키워드로 채널 목록 찾기
-with st.sidebar.expander("📈 채널 키워드로 채널 찾기", expanded=False):
+# ④ 키워드채널검색 (채널 키워드로 채널 찾기)
+with st.sidebar.expander("📈 키워드채널검색", expanded=False):
     channel_keyword = st.text_input("채널 키워드", key="channel_keyword")
-    channel_list_max = st.number_input(
-        "최대 채널 수",
-        1, 50, 20, step=5,
-        key="channel_list_max",
-    )
+    # 최대 채널 수 역시 세부필터 max_fetch 사용
     do_channel_list_search = st.button(
         "채널 목록 검색 실행",
         use_container_width=True,
@@ -707,8 +709,8 @@ with st.sidebar.expander("📈 채널 키워드로 채널 찾기", expanded=Fals
 
 st.sidebar.markdown("---")
 
-# 최근 검색 키워드
-with st.sidebar.expander("⏱ 최근 검색 키워드", expanded=False):
+# 최근 키워드
+with st.sidebar.expander("⏱ 최근 키워드", expanded=False):
     recents = get_recent_keywords(30)
     if not recents:
         st.write("최근 검색 없음")
@@ -745,20 +747,15 @@ with st.sidebar.expander("⚙ 세부 필터", expanded=False):
         key="duration_label",
     )
     max_fetch = st.number_input(
-        "일반/채널 영상 검색 시 가져올 최대 개수",
+        "모든 검색에서 가져올 최대 개수",
         1, 5000, 50, step=10,
         key="max_fetch",
     )
     country_name = st.selectbox("검색용 국가/언어", COUNTRY_LIST, index=0, key="country_for_search")
     region_code, lang_code = COUNTRY_LANG_MAP[country_name]
 
-# 메인 영역 상단: 일반 검색 버튼 + 쿼터 표시
-col_btn, col_quota = st.columns([2,1])
-
-with col_btn:
-    do_general_search = st.button("일반 검색 실행", type="primary", use_container_width=True)
-with col_quota:
-    st.metric("오늘 사용한 쿼터", f"{get_today_quota_total():,} units")
+# 메인 상단: 오늘 쿼터
+st.metric("오늘 사용한 쿼터", f"{get_today_quota_total():,} units")
 
 status_placeholder = st.empty()
 
@@ -854,12 +851,11 @@ try:
 
         # ------ 트렌드 검색 ------
         elif mode_triggered == "trend":
-            # 트렌드용 regionCode만 사용
             trend_rc, _ = COUNTRY_LANG_MAP[trend_region_name]
             append_keyword_log(f"[trend]{trend_region_name}")
             status_placeholder.info("트렌드(인기 동영상) 불러오는 중...")
             raw_results, cost_used, breakdown = search_trending_videos(
-                max_results=trend_max,
+                max_results=max_fetch,   # ✅ 세부필터 max_fetch 사용
                 region_code=trend_rc,
             )
             add_quota_usage(cost_used)
@@ -888,7 +884,6 @@ try:
                         "URL": r["url"],
                     })
                 df = pd.DataFrame(rows)
-                # 트렌드는 업로드기간 필터는 선택사항이지만 통일감 있게 적용
                 if not df.empty:
                     df = apply_client_filters(df, upload_period, min_views_label)
                 st.session_state.results_df = df
@@ -898,7 +893,7 @@ try:
                     f"[트렌드] 결과: {len(df):,}건 (이번 쿼터 사용량: {cost_used})"
                 )
 
-        # ------ 채널 이름으로 영상 검색 ------
+        # ------ 채널영상검색 (채널 이름으로 영상 검색) ------
         elif mode_triggered == "channel_videos":
             ch_name = (channel_name_for_videos or "").strip()
             if not ch_name:
@@ -951,7 +946,7 @@ try:
                         f"필터 후: {len(df):,}건 (이번 쿼터 사용량: {cost_used})"
                     )
 
-        # ------ 채널 키워드로 채널 목록 검색 ------
+        # ------ 키워드채널검색 (채널 키워드로 채널 찾기) ------
         elif mode_triggered == "channel_list":
             ch_kw = (channel_keyword or "").strip()
             if not ch_kw:
@@ -961,7 +956,7 @@ try:
                 status_placeholder.info("채널 목록 검색 실행 중...")
                 ch_results, cost_used, breakdown = search_channels_by_keyword(
                     keyword=ch_kw,
-                    max_results=channel_list_max,
+                    max_results=max_fetch,   # ✅ 세부필터 max_fetch 사용
                     region_code=region_code,
                     lang_code=lang_code,
                 )
@@ -977,6 +972,7 @@ try:
                         subs = r["subs"]
                         subs_text = f"{subs:,}" if isinstance(subs, int) else "-"
                         df_rows.append({
+                            "썸네일": r.get("thumbnail_url", ""),  # 채널 아이콘
                             "채널명": r["channel_title"],
                             "구독자수": subs_text,
                             "채널조회수": f"{r['total_views']:,}",
@@ -1011,11 +1007,11 @@ else:
         df_display["링크"] = df_display["URL"]
         df_display = df_display.drop(columns=["URL"])
 
-    # 썸네일 옵션 적용
+    # 썸네일 옵션 적용 (체크 해제 시 썸네일 컬럼 제거)
     if not show_thumbnails and "썸네일" in df_display.columns:
         df_display = df_display.drop(columns=["썸네일"])
 
-    # 모드별 제목
+    # 모드별 제목 및 data_editor key
     if mode == "general":
         st.subheader("📊 일반 검색 결과 리스트")
         editor_key = "video_results_editor_general"
@@ -1048,6 +1044,7 @@ else:
         ]
     else:
         base_order = [
+            "썸네일",
             "채널명",
             "구독자수",
             "채널조회수",
@@ -1066,7 +1063,7 @@ else:
     if show_thumbnails and "썸네일" in df_display.columns:
         column_config["썸네일"] = st.column_config.ImageColumn(
             "썸네일",
-            help="YouTube 썸네일",
+            help="썸네일 이미지",
             width="small",
         )
 
@@ -1080,4 +1077,4 @@ else:
         key=editor_key,   # ✅ 모드별 고유 key로 툴바/눈 아이콘 상태 안정화
     )
 
-    st.caption("👉 '열기' 링크를 누르면 새 탭에서 영상 또는 채널이 열립니다. (모바일에서도 지원)")
+    st.caption("👉 '열기' 링크를 누르면 새 탭에서 영상 또는 채널이 열립니다.")
