@@ -1,70 +1,39 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import sys
 import os
 import json
-import shutil
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-import random
 
 import streamlit as st
+import pandas as pd
 
-# --- 선택 의존성(썸네일 미리보기용, 없어도 동작) ---
-try:
-    import requests
-    PIL_AVAILABLE = True
-except Exception:
-    PIL_AVAILABLE = False
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
-# --- YouTube Data API ---
-try:
-    from googleapiclient.discovery import build
-    from googleapiclient.errors import HttpError
-except Exception:
-    build = None
-    HttpError = Exception
+from supabase import create_client, Client
 
-# ============================
-# 저장 위치(iCloud) – Tk 버전과 동일
-# ============================
-ICLOUD_ROOT = Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs"
-BASE_DIR = ICLOUD_ROOT / "youtubesearch"
-BASE_DIR.mkdir(parents=True, exist_ok=True)
+st.set_page_config(
+    page_title="YouTube 검색기 (Streamlit)",
+    page_icon="🔍",
+    layout="wide",
+)
 
-def _p(name: str) -> str:
-    return str(BASE_DIR / name)
+st.markdown(
+    """
+    <style>
+    .block-container { padding-top: 3rem !important; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-def _migrate(old: str, new: str):
-    old = os.path.expanduser(old)
-    if os.path.exists(old) and not os.path.exists(new):
-        try:
-            os.rename(old, new)
-        except Exception:
-            try:
-                shutil.copy2(old, new)
-            except Exception:
-                pass
+st.title("🔍 YouTube 검색기 (Streamlit)")
 
-CONFIG_PATH       = _p("yts_config.json")
-HISTORY_PATH      = _p("yts_search_history.json")
-KEYWORD_LOG_PATH  = _p("yts_keyword_log.json")
-QUOTA_PATH        = _p("yts_quota_usage.json")
-
-# 과거 dot파일 마이그레이션
-_migrate("~/.yts_config.json",         CONFIG_PATH)
-_migrate("~/.yts_search_history.json", HISTORY_PATH)
-_migrate("~/.yts_keyword_log.json",    KEYWORD_LOG_PATH)
-
-# ----------------------------
-# 환경/상수
-# ----------------------------
-ENV_KEY_NAME = "YOUTUBE_API_KEY"
 KST = timezone(timedelta(hours=9))
+ENV_KEY_NAME = "YOUTUBE_API_KEY"
 WEEKDAY_KO = ["월요일","화요일","수요일","목요일","금요일","토요일","일요일"]
 
-# 국가/언어 선택 - UI 라벨 → (regionCode, relevanceLanguage)
 COUNTRY_LANG_MAP = {
     "한국": ("KR", "ko"),
     "일본": ("JP", "ja"),
@@ -72,33 +41,81 @@ COUNTRY_LANG_MAP = {
     "영국": ("GB", "en"),
     "독일": ("DE", "de"),
     "프랑스": ("FR", "fr"),
+    "스페인": ("ES", "es"),
+    "이탈리아": ("IT", "it"),
     "브라질": ("BR", "pt"),
     "인도": ("IN", "en"),
-    "인도네시아": ("ID", "id"),
-    "베트남": ("VN", "vi"),
-    "태국": ("TH", "th"),
-    "필리핀": ("PH", "en"),
+    "호주": ("AU", "en"),
 }
 COUNTRY_LIST = list(COUNTRY_LANG_MAP.keys())
 
 # ----------------------------
-# 공용 JSON I/O
+# Supabase 연동 (설정/로그 저장용)
 # ----------------------------
-def _load_json(path, default):
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
+@st.cache_resource
+def get_supabase_client() -> Client | None:
+    url = st.secrets.get("SUPABASE_URL")
+    key = st.secrets.get("SUPABASE_SERVICE_KEY")
+    if not url or not key:
+        return None
+    return create_client(url, key)
+
+SUPABASE_BUCKET = st.secrets.get("SUPABASE_BUCKET", "yts-config")
+supabase = get_supabase_client()
+
+def _load_json(filename: str, default):
+    if supabase is None:
+        return default
+    try:
+        res = supabase.storage.from_(SUPABASE_BUCKET).download(filename)
+        if res is None:
             return default
-    return default
+        if isinstance(res, bytes):
+            text = res.decode("utf-8")
+        else:
+            text = str(res)
+        return json.loads(text)
+    except Exception:
+        return default
 
-def _save_json(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+def _save_json(filename: str, data):
+    if supabase is None:
+        return
+    try:
+        payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+        supabase.storage.from_(SUPABASE_BUCKET).upload(
+            path=filename,
+            file=payload,
+            file_options={"content-type": "application/json", "x-upsert": "true"},
+        )
+    except Exception as e:
+        st.warning(f"Supabase 저장 오류({filename}): {e}")
+
+# 설정/로그 파일 이름
+KEYWORD_LOG_PATH  = "yts_keyword_log.json"
+QUOTA_PATH        = "yts_quota_usage.json"
 
 # ----------------------------
-# 쿼터 저장/로드
+# API 키: secrets에서만 사용
+# ----------------------------
+YOUTUBE_API_KEYS = st.secrets.get("YOUTUBE_API_KEYS", [])
+if isinstance(YOUTUBE_API_KEYS, str):
+    YOUTUBE_API_KEYS = [YOUTUBE_API_KEYS]
+SINGLE_API_KEY = st.secrets.get("YOUTUBE_API_KEY", "")
+
+def get_current_api_key() -> str:
+    """
+    - st.secrets["YOUTUBE_API_KEYS"] → 리스트면 첫 번째 키 사용
+    - 없으면 st.secrets["YOUTUBE_API_KEY"] 사용
+    """
+    if YOUTUBE_API_KEYS:
+        return YOUTUBE_API_KEYS[0]
+    if SINGLE_API_KEY:
+        return SINGLE_API_KEY
+    return ""
+
+# ----------------------------
+# 쿼터 관리
 # ----------------------------
 def _load_quota_map():
     return _load_json(QUOTA_PATH, {})
@@ -122,112 +139,13 @@ def add_quota_usage(units: int):
     _save_quota_map(data)
 
 # ----------------------------
-# API 키 관리 (간단 버전; Tk와 동일한 config 사용)
+# 키워드 로그
 # ----------------------------
-_DEFAULT_API_KEYS = []
-
-def _load_api_keys_config():
-    data = _load_json(CONFIG_PATH, {})
-    keys = [k.strip() for k in (data.get("api_keys") or []) if k.strip()]
-    if not keys and _DEFAULT_API_KEYS:
-        keys = _DEFAULT_API_KEYS[:]
-    sel = data.get("selected_index", 0)
-    sel = max(0, min(sel, len(keys)-1)) if keys else 0
-    return {"api_keys": keys, "selected_index": sel}
-
-def _save_api_keys_config(keys, selected_index: int):
-    keys = [k.strip() for k in keys if k.strip()]
-    selected_index = max(0, min(selected_index, len(keys)-1)) if keys else 0
-    _save_json(CONFIG_PATH, {"api_keys": keys, "selected_index": selected_index})
-
-API_KEYS_STATE = {
-    "keys": [],
-    "index": 0,
-}
-
-def _apply_env_key(key: str):
-    if key:
-        os.environ[ENV_KEY_NAME] = key
-    else:
-        os.environ.pop(ENV_KEY_NAME, None)
-
-def init_api_keys_state():
-    cfg = _load_api_keys_config()
-    API_KEYS_STATE["keys"] = cfg["api_keys"]
-    API_KEYS_STATE["index"] = cfg["selected_index"]
-    if API_KEYS_STATE["keys"]:
-        _apply_env_key(API_KEYS_STATE["keys"][API_KEYS_STATE["index"]])
-    else:
-        _apply_env_key("")
-
-def get_current_api_key() -> str:
-    if not API_KEYS_STATE["keys"]:
-        return ""
-    return API_KEYS_STATE["keys"][API_KEYS_STATE["index"]]
-
-def save_api_keys_from_user(keys: list[str], selected_index: int = 0):
-    if not keys:
-        _save_api_keys_config([], 0)
-        API_KEYS_STATE["keys"] = []
-        API_KEYS_STATE["index"] = 0
-        _apply_env_key("")
-        return
-    _save_api_keys_config(keys, selected_index)
-    cfg = _load_api_keys_config()
-    API_KEYS_STATE["keys"] = cfg["api_keys"]
-    API_KEYS_STATE["index"] = cfg["selected_index"]
-    _apply_env_key(API_KEYS_STATE["keys"][API_KEYS_STATE["index"]])
-
-# ----------------------------
-# YouTube 클라이언트
-# ----------------------------
-def get_youtube_client():
-    if build is None:
-        raise RuntimeError(
-            "google-api-python-client가 설치되어 있지 않습니다.\n"
-            "터미널에서 아래 명령을 실행하세요:\n\n"
-            "pip install google-api-python-client"
-        )
-    key = get_current_api_key()
-    if not key:
-        raise RuntimeError("API 키가 비어 있습니다. 사이드바에서 API 키를 입력/저장하세요.")
-    try:
-        return build("youtube", "v3", developerKey=key, cache_discovery=False)
-    except TypeError:
-        return build("youtube", "v3", developerKey=key)
-
-# ----------------------------
-# 기록/로그
-# ----------------------------
-def _load_history_raw():
-    return _load_json(HISTORY_PATH, {})
-
-def _save_history_raw(data: dict):
-    try:
-        _save_json(HISTORY_PATH, data)
-    except Exception:
-        pass
-
-def add_to_history(query: str, limit_per_day: int = 100):
-    q = (query or "").strip()
-    if not q:
-        return
-    data = _load_history_raw()
-    today = datetime.now(KST).strftime("%Y-%m-%d")
-    lst = data.get(today, [])
-    lst = [x for x in lst if x != q]
-    lst.insert(0, q)
-    data[today] = lst[:limit_per_day]
-    _save_history_raw(data)
-
 def _load_keyword_log():
     return _load_json(KEYWORD_LOG_PATH, [])
 
 def _save_keyword_log(entries: list):
-    try:
-        _save_json(KEYWORD_LOG_PATH, entries)
-    except Exception:
-        pass
+    _save_json(KEYWORD_LOG_PATH, entries)
 
 def append_keyword_log(query: str):
     q = (query or "").strip()
@@ -238,39 +156,42 @@ def append_keyword_log(query: str):
     entries.append({"ts": now, "q": q})
     _save_keyword_log(entries)
 
-def get_recent_keywords(days: int = 14, limit: int = 50):
-    cutoff = datetime.now(KST) - timedelta(days=days)
+def get_recent_keywords(limit: int = 30):
+    entries = _load_keyword_log()
     out = []
-    for item in _load_keyword_log():
-        ts = item.get("ts"); q = item.get("q")
+    for item in entries:
+        ts = item.get("ts")
+        q  = item.get("q")
         if not ts or not q:
             continue
         try:
             dt = datetime.fromisoformat(ts)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=KST)
-            dt_kst = dt.astimezone(KST)
         except Exception:
             continue
-        if dt_kst >= cutoff:
-            out.append((dt_kst, q))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=KST)
+        out.append((dt, q))
     out.sort(key=lambda x: x[0], reverse=True)
     return out[:limit]
 
 # ----------------------------
-# 시간/길이 유틸
+# 시간/형식 유틸
 # ----------------------------
-def format_k_datetime_simple(dt_aw: datetime) -> str:
+def format_k_datetime(dt_aw: datetime) -> str:
     if dt_aw.tzinfo is None:
         dt_aw = dt_aw.replace(tzinfo=KST)
     dt = dt_aw.astimezone(KST)
-    return f"{dt.month}월 {dt.day}일 {dt.hour}시 {dt.minute}분"
+    wd = WEEKDAY_KO[dt.weekday()]
+    h24 = dt.hour
+    ampm = "오전" if h24 < 12 else "오후"
+    h12 = h24 % 12 or 12
+    return f"{dt.month}월{dt.day}일 {wd} {ampm}{h12}시 {dt.minute}분"
 
 def parse_published_at_to_kst(published_iso: str) -> datetime:
     dt_utc = datetime.fromisoformat(published_iso.replace("Z", "+00:00"))
     return dt_utc.astimezone(KST)
 
-def human_elapsed_days_hours(later: datetime, earlier: datetime) -> (int, int):
+def human_elapsed_days_hours(later: datetime, earlier: datetime) -> tuple[int, int]:
     delta = later - earlier
     if delta.total_seconds() < 0:
         return 0, 0
@@ -281,18 +202,14 @@ def human_elapsed_days_hours(later: datetime, earlier: datetime) -> (int, int):
 def published_after_from_label(label: str):
     label = label.strip()
     now_utc = datetime.now(timezone.utc)
+    if label == "제한없음":
+        return None
     if label.endswith("일"):
-        days = int(label[:-1]); dt = now_utc - timedelta(days=days)
+        days = int(label[:-1])
+        dt = now_utc - timedelta(days=days)
     else:
         return None
     return dt.isoformat(timespec="seconds").replace("+00:00", "Z")
-
-def cutoff_dt_from_label_kst(label: str) -> datetime:
-    label = label.strip()
-    now_kst = datetime.now(KST)
-    if label.endswith("일"):
-        return now_kst - timedelta(days=int(label[:-1]))
-    return now_kst
 
 def parse_duration_iso8601(iso_dur: str) -> int:
     h = m = s = 0
@@ -325,27 +242,49 @@ def duration_filter_ok(seconds: int, label: str) -> bool:
     if label == "전체": return True
     if label == "쇼츠": return seconds < 60
     if label == "롱폼": return seconds >= 60
-    if label == "1분~20분": return 60 <= seconds < 20*60
-    if label == "20분~40분": return 20*60 <= seconds < 40*60
-    if label == "40분~60분": return 40*60 <= seconds < 60*60
+    if label == "1~20분": return 60 <= seconds < 20*60
+    if label == "20~40분": return 20*60 <= seconds < 40*60
+    if label == "40~60분": return 40*60 <= seconds < 60*60
     if label == "60분이상": return seconds >= 60*60
     return True
 
-def _chunked(seq, n):
-    for i in range(0, len(seq), n):
-        yield seq[i:i+n]
+def parse_min_views(text: str) -> int:
+    digits = text.replace(",", "").replace(" ", "").replace("만", "0000")
+    try:
+        return int(digits)
+    except Exception:
+        return 0
 
 # ----------------------------
-# YouTube API 호출: 키워드 영상 검색
+# YouTube 클라이언트
 # ----------------------------
-def search_videos(query: str, min_views: int, period_label: str, duration_label: str,
-                  max_fetch: int = 200,
-                  region_code: str | None = None, lang_code: str | None = None):
+def get_youtube_client():
+    key = get_current_api_key()
+    if not key:
+        raise RuntimeError("YouTube API 키가 없습니다. (st.secrets에 YOUTUBE_API_KEYS 또는 YOUTUBE_API_KEY 설정 필요)")
+    try:
+        return build("youtube", "v3", developerKey=key, cache_discovery=False)
+    except TypeError:
+        return build("youtube", "v3", developerKey=key)
+
+# ----------------------------
+# 영상 검색 (키워드 기반)
+# ----------------------------
+def search_videos(
+    query: str,
+    min_views: int,
+    api_period_label: str,
+    duration_label: str,
+    max_fetch: int,
+    region_code: str | None,
+    lang_code: str | None,
+):
     youtube = get_youtube_client()
-    published_after = published_after_from_label(period_label)
+    published_after = published_after_from_label(api_period_label)
 
     cost_used = 0
-    max_fetch = max(1, min(int(max_fetch or 200), 5000))
+    breakdown = {"search.list": 0, "videos.list": 0}
+    max_fetch = max(1, min(int(max_fetch or 100), 5000))
 
     results_tmp = []
     next_token = None
@@ -353,33 +292,41 @@ def search_videos(query: str, min_views: int, period_label: str, duration_label:
 
     while fetched < max_fetch:
         take = min(50, max_fetch - fetched)
-        try:
-            kwargs = dict(q=query, part="id", type="video", maxResults=take)
-            if published_after:
-                kwargs["publishedAfter"] = published_after
-            if region_code:
-                kwargs["regionCode"] = region_code
-            if lang_code:
-                kwargs["relevanceLanguage"] = lang_code
-            if next_token:
-                kwargs["pageToken"] = next_token
+        kwargs = dict(
+            q=query,
+            part="id",
+            type="video",
+            maxResults=take,
+        )
+        if published_after:
+            kwargs["publishedAfter"] = published_after
+        if region_code:
+            kwargs["regionCode"] = region_code
+        if lang_code:
+            kwargs["relevanceLanguage"] = lang_code
+        if next_token:
+            kwargs["pageToken"] = next_token
 
+        try:
             search_response = youtube.search().list(**kwargs).execute()
-            cost_used += 100
+            cost_used += 100; breakdown["search.list"] += 100
         except HttpError as e:
             raise RuntimeError(f"Search API 오류: {e}")
 
-        page_ids = [it["id"]["videoId"] for it in search_response.get("items", [])
-                    if "id" in it and "videoId" in it["id"]]
+        page_ids = [
+            it["id"]["videoId"]
+            for it in search_response.get("items", [])
+            if "id" in it and "videoId" in it["id"]
+        ]
         if not page_ids:
             break
 
         try:
             video_response = youtube.videos().list(
                 part="snippet,statistics,contentDetails",
-                id=",".join(page_ids)
+                id=",".join(page_ids),
             ).execute()
-            cost_used += 1
+            cost_used += 1; breakdown["videos.list"] += 1
         except HttpError as e:
             raise RuntimeError(f"Videos API 오류: {e}")
 
@@ -389,20 +336,16 @@ def search_videos(query: str, min_views: int, period_label: str, duration_label:
             snip = item.get("snippet", {}) or {}
             stats = item.get("statistics", {}) or {}
             cdet = item.get("contentDetails", {}) or {}
+
             title = snip.get("title", "")
             published_at_iso = snip.get("publishedAt", "")
             view_count = int(stats.get("viewCount", 0))
             url = f"https://www.youtube.com/watch?v={vid}"
-            thumbs = snip.get("thumbnails", {})
-            thumb_url = (thumbs.get("high", {}) or {}).get("url") \
-                        or (thumbs.get("medium", {}) or {}).get("url") \
-                        or (thumbs.get("default", {}) or {}).get("url") \
-                        or ""
-            seconds = parse_duration_iso8601(cdet.get("duration", ""))
+            duration_sec = parse_duration_iso8601(cdet.get("duration", ""))
 
-            if not duration_filter_ok(seconds, duration_label): 
+            if view_count < min_views:
                 continue
-            if view_count < min_views: 
+            if not duration_filter_ok(duration_sec, duration_label):
                 continue
 
             results_tmp.append({
@@ -410,9 +353,7 @@ def search_videos(query: str, min_views: int, period_label: str, duration_label:
                 "views": view_count,
                 "published_at_iso": published_at_iso,
                 "url": url,
-                "thumbnail_url": thumb_url,
-                "duration_sec": seconds,
-                "channel_id": snip.get("channelId", ""),
+                "duration_sec": duration_sec,
                 "channel_title": snip.get("channelTitle", ""),
             })
 
@@ -421,131 +362,178 @@ def search_videos(query: str, min_views: int, period_label: str, duration_label:
         if not next_token:
             break
 
-    if not results_tmp:
-        return [], cost_used
+    return results_tmp, cost_used, breakdown
 
-    # 채널 통계
-    channel_ids = {r["channel_id"] for r in results_tmp if r.get("channel_id")}
-    channels_map = {}
+# ----------------------------
+# 채널 키워드로 채널 찾기
+# ----------------------------
+def search_channels_by_keyword(
+    keyword: str,
+    max_results: int,
+    region_code: str | None,
+    lang_code: str | None,
+):
+    youtube = get_youtube_client()
+    take = max(1, min(max_results, 50))
+    kwargs = dict(
+        q=keyword,
+        part="id",
+        type="channel",
+        maxResults=take,
+    )
+    if region_code:
+        kwargs["regionCode"] = region_code
+    if lang_code:
+        kwargs["relevanceLanguage"] = lang_code
+
     try:
-        for batch in _chunked(list(channel_ids), 50):
-            ch_resp = youtube.channels().list(
-                part="snippet,statistics",
-                id=",".join(batch)
-            ).execute()
-            cost_used += 1
-            for c in ch_resp.get("items", []):
-                cid = c.get("id")
-                cstats = c.get("statistics", {}) or {}
-                subs = cstats.get("subscriberCount")
-                subs_int = int(subs) if subs is not None else None
-                channels_map[cid] = {
-                    "title": (c.get("snippet", {}) or {}).get("title", ""),
-                    "subs": subs_int,
-                    "views": int(cstats.get("viewCount", 0)),
-                    "videos": int(cstats.get("videoCount", 0)),
-                }
-    except HttpError:
-        channels_map = {}
+        search_response = youtube.search().list(**kwargs).execute()
+        cost_used = 100
+    except HttpError as e:
+        raise RuntimeError(f"Channel search API 오류: {e}")
+
+    ch_ids = [
+        it["id"]["channelId"]
+        for it in search_response.get("items", [])
+        if "id" in it and "channelId" in it["id"]
+    ]
+    if not ch_ids:
+        return [], cost_used, {"search.list": 100, "channels.list": 0}
+
+    try:
+        ch_resp = youtube.channels().list(
+            part="snippet,statistics",
+            id=",".join(ch_ids),
+        ).execute()
+        cost_used += 1
+    except HttpError as e:
+        raise RuntimeError(f"Channels API 오류: {e}")
 
     results = []
-    for r in results_tmp:
-        cinfo = channels_map.get(r["channel_id"], {})
-        r.update({
-            "channel_subs": cinfo.get("subs"),
-            "channel_total_views": cinfo.get("views", 0),
-            "channel_video_count": cinfo.get("videos", 0),
-            "channel_title": cinfo.get("title", r.get("channel_title", "")),
+    for c in ch_resp.get("items", []):
+        cid = c.get("id", "")
+        sn = c.get("snippet", {}) or {}
+        stt = c.get("statistics", {}) or {}
+        subs = int(stt.get("subscriberCount", 0)) if stt.get("subscriberCount") is not None else None
+        total_views = int(stt.get("viewCount", 0))
+        videos = int(stt.get("videoCount", 0))
+        url = f"https://www.youtube.com/channel/{cid}" if cid else ""
+        results.append({
+            "channel_title": sn.get("title", ""),
+            "subs": subs,
+            "total_views": total_views,
+            "videos": videos,
+            "url": url,
         })
-        results.append(r)
 
-    results.sort(key=lambda x: x["views"], reverse=True)
-    return results, cost_used
+    results.sort(key=lambda r: (r["subs"] or 0), reverse=True)
+    return results, cost_used, {"search.list": 100, "channels.list": 1}
 
 # ----------------------------
-# YouTube API: 채널 내부 영상 검색
+# 채널 검색어(채널 이름)로 채널 영상 검색
 # ----------------------------
-def search_videos_in_channel_by_name(channel_query: str, min_views: int, period_label: str,
-                                     duration_label: str, max_fetch: int = 200,
-                                     region_code: str | None = None, lang_code: str | None = None):
+def search_videos_in_channel_by_name(
+    channel_name: str,
+    min_views: int,
+    api_period_label: str,
+    duration_label: str,
+    max_fetch: int,
+    region_code: str | None,
+    lang_code: str | None,
+):
     youtube = get_youtube_client()
-    published_after = published_after_from_label(period_label)
-
     cost_used = 0
-    max_fetch = max(1, min(int(max_fetch or 200), 5000))
+    breakdown = {"search.list": 0, "videos.list": 0}
 
-    # 1) 채널 찾기
+    # 1) 채널 검색 (이름으로)
+    kwargs_ch = dict(
+        q=channel_name,
+        part="id,snippet",
+        type="channel",
+        maxResults=1,
+    )
+    if region_code:
+        kwargs_ch["regionCode"] = region_code
+    if lang_code:
+        kwargs_ch["relevanceLanguage"] = lang_code
+
     try:
-        kwargs_ch = dict(part="id,snippet", q=channel_query, type="channel", maxResults=1)
-        if region_code: kwargs_ch["regionCode"] = region_code
-        if lang_code:   kwargs_ch["relevanceLanguage"] = lang_code
-        ch_resp = youtube.search().list(**kwargs_ch).execute()
-        cost_used += 100
+        ch_search = youtube.search().list(**kwargs_ch).execute()
+        cost_used += 100; breakdown["search.list"] += 100
     except HttpError as e:
         raise RuntimeError(f"채널 검색 오류: {e}")
 
-    items = ch_resp.get("items", [])
+    items = ch_search.get("items", [])
     if not items:
-        return [], cost_used
-    channel_id = items[0]["id"]["channelId"]
+        return [], cost_used, breakdown
 
-    # 2) 해당 채널의 영상들
+    channel_id = items[0]["id"]["channelId"]
+    channel_title = (items[0].get("snippet") or {}).get("title", channel_name)
+
+    # 2) 해당 채널의 영상 검색
+    published_after = published_after_from_label(api_period_label)
+    max_fetch = max(1, min(int(max_fetch or 100), 5000))
+
     results_tmp = []
     next_token = None
     fetched = 0
 
     while fetched < max_fetch:
         take = min(50, max_fetch - fetched)
-        try:
-            kwargs = dict(part="id", type="video", channelId=channel_id, maxResults=take, order="date")
-            if published_after:
-                kwargs["publishedAfter"] = published_after
-            if region_code:
-                kwargs["regionCode"] = region_code
-            if lang_code:
-                kwargs["relevanceLanguage"] = lang_code
-            if next_token:
-                kwargs["pageToken"] = next_token
+        kwargs = dict(
+            part="id",
+            type="video",
+            channelId=channel_id,
+            maxResults=take,
+            order="date",
+        )
+        if published_after:
+            kwargs["publishedAfter"] = published_after
+        if region_code:
+            kwargs["regionCode"] = region_code
+        if lang_code:
+            kwargs["relevanceLanguage"] = lang_code
+        if next_token:
+            kwargs["pageToken"] = next_token
 
+        try:
             v_search = youtube.search().list(**kwargs).execute()
-            cost_used += 100
+            cost_used += 100; breakdown["search.list"] += 100
         except HttpError as e:
             raise RuntimeError(f"채널 영상 검색 오류: {e}")
 
-        page_ids = [it["id"]["videoId"] for it in v_search.get("items", [])
-                    if "id" in it and "videoId" in it["id"]]
+        page_ids = [
+            it["id"]["videoId"]
+            for it in v_search.get("items", [])
+            if "id" in it and "videoId" in it["id"]
+        ]
         if not page_ids:
             break
 
         try:
-            video_response = youtube.videos().list(
+            video_resp = youtube.videos().list(
                 part="snippet,statistics,contentDetails",
-                id=",".join(page_ids)
+                id=",".join(page_ids),
             ).execute()
-            cost_used += 1
+            cost_used += 1; breakdown["videos.list"] += 1
         except HttpError as e:
             raise RuntimeError(f"Videos API 오류: {e}")
 
-        items2 = video_response.get("items", [])
-        for item in items2:
+        for item in video_resp.get("items", []):
             vid = item.get("id", "")
             snip = item.get("snippet", {}) or {}
             stats = item.get("statistics", {}) or {}
             cdet = item.get("contentDetails", {}) or {}
+
             title = snip.get("title", "")
             published_at_iso = snip.get("publishedAt", "")
             view_count = int(stats.get("viewCount", 0))
             url = f"https://www.youtube.com/watch?v={vid}"
-            thumbs = snip.get("thumbnails", {})
-            thumb_url = (thumbs.get("high", {}) or {}).get("url") \
-                        or (thumbs.get("medium", {}) or {}).get("url") \
-                        or (thumbs.get("default", {}) or {}).get("url") \
-                        or ""
-            seconds = parse_duration_iso8601(cdet.get("duration", ""))
+            duration_sec = parse_duration_iso8601(cdet.get("duration", ""))
 
-            if not duration_filter_ok(seconds, duration_label): 
+            if view_count < min_views:
                 continue
-            if view_count < min_views: 
+            if not duration_filter_ok(duration_sec, duration_label):
                 continue
 
             results_tmp.append({
@@ -553,10 +541,8 @@ def search_videos_in_channel_by_name(channel_query: str, min_views: int, period_
                 "views": view_count,
                 "published_at_iso": published_at_iso,
                 "url": url,
-                "thumbnail_url": thumb_url,
-                "duration_sec": seconds,
-                "channel_id": channel_id,
-                "channel_title": snip.get("channelTitle", ""),
+                "duration_sec": duration_sec,
+                "channel_title": channel_title,
             })
 
         fetched += len(page_ids)
@@ -564,395 +550,311 @@ def search_videos_in_channel_by_name(channel_query: str, min_views: int, period_
         if not next_token:
             break
 
-    if not results_tmp:
-        return [], cost_used
-
-    # 채널 메타
-    channels_map = {}
-    try:
-        ch_resp2 = youtube.channels().list(
-            part="snippet,statistics",
-            id=channel_id
-        ).execute()
-        cost_used += 1
-        for c in ch_resp2.get("items", []):
-            cid = c.get("id")
-            cstats = c.get("statistics", {}) or {}
-            subs = cstats.get("subscriberCount")
-            subs_int = int(subs) if subs is not None else None
-            channels_map[cid] = {
-                "title": (c.get("snippet", {}) or {}).get("title", ""),
-                "subs": subs_int,
-                "views": int(cstats.get("viewCount", 0)),
-                "videos": int(cstats.get("videoCount", 0)),
-            }
-    except HttpError:
-        channels_map = {}
-
-    results = []
-    for r in results_tmp:
-        cinfo = channels_map.get(r["channel_id"], {})
-        r.update({
-            "channel_subs": cinfo.get("subs"),
-            "channel_total_views": cinfo.get("views", 0),
-            "channel_video_count": cinfo.get("videos", 0),
-            "channel_title": cinfo.get("title", r.get("channel_title", "")),
-        })
-        results.append(r)
-
-    results.sort(key=lambda x: x["views"], reverse=True)
-    return results, cost_used
+    return results_tmp, cost_used, breakdown
 
 # ----------------------------
-# YouTube API: 채널 키워드로 채널 찾기
+# 등급 계산
 # ----------------------------
-def search_channels_by_keyword(keyword: str, max_fetch: int = 50,
-                               region_code: str | None = None, lang_code: str | None = None):
-    youtube = get_youtube_client()
-    cost_used = 0
-    max_fetch = max(1, min(int(max_fetch or 50), 200))
+def calc_grade(clicks_per_hour: int) -> str:
+    v = clicks_per_hour
+    if v >= 5000: return "S"
+    if v >= 2000: return "A+"
+    if v >= 1000: return "A"
+    if v >= 500:  return "B"
+    if v >= 300:  return "C"
+    if v >= 100:  return "D"
+    if v >= 50:   return "E"
+    return "F"
 
-    results = []
-    next_token = None
-    fetched = 0
+# ==================================================================
+# 사이드바 UI (검색 / 필터 / 최근검색 / 쿼터)
+# ==================================================================
 
-    while fetched < max_fetch:
-        take = min(50, max_fetch - fetched)
-        try:
-            kwargs = dict(part="id,snippet", q=keyword, type="channel", maxResults=take)
-            if region_code: kwargs["regionCode"] = region_code
-            if lang_code:   kwargs["relevanceLanguage"] = lang_code
-            if next_token:
-                kwargs["pageToken"] = next_token
+st.sidebar.header("검색")
 
-            resp = youtube.search().list(**kwargs).execute()
-            cost_used += 100
-        except HttpError as e:
-            raise RuntimeError(f"채널 검색 오류: {e}")
+# 1) 검색어 (공통)
+query = st.sidebar.text_input("검색어", "", placeholder="예: 월드컵 경제학")
 
-        items = resp.get("items", [])
-        if not items:
-            break
+# 2) 일반/트렌드 버튼 (2x2 첫 줄)
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    btn_general = st.button("일반 검색", use_container_width=True)
+with col2:
+    btn_trend = st.button("트렌드", use_container_width=True)
 
-        channel_ids = [it["id"]["channelId"] for it in items
-                       if "id" in it and "channelId" in it["id"]]
+st.sidebar.markdown("**채널 검색**")
 
-        try:
-            ch_resp = youtube.channels().list(
-                part="snippet,statistics",
-                id=",".join(channel_ids)
-            ).execute()
-            cost_used += 1
-        except HttpError as e:
-            raise RuntimeError(f"채널 상세 조회 오류: {e}")
+# 3) 채널 키워드 + 채널 검색어
+channel_keyword = st.sidebar.text_input("채널 키워드", "", placeholder="예: 축구 하이라이트")
+channel_name = st.sidebar.text_input("채널 검색어", "", placeholder="예: SPOTV")
 
-        for c in ch_resp.get("items", []):
-            cid = c.get("id")
-            snip = c.get("snippet", {}) or {}
-            stats = c.get("statistics", {}) or {}
-            subs = stats.get("subscriberCount")
-            subs_int = int(subs) if subs is not None else None
-            results.append({
-                "channel_id": cid,
-                "channel_title": snip.get("title", ""),
-                "description": snip.get("description", ""),
-                "subs": subs_int,
-                "total_views": int(stats.get("viewCount", 0)),
-                "video_count": int(stats.get("videoCount", 0)),
-                "url": f"https://www.youtube.com/channel/{cid}",
-            })
+# 4) 채널 찾기 / 채널 영상 버튼 (2x2 둘째 줄)
+col3, col4 = st.sidebar.columns(2)
+with col3:
+    btn_channel_find = st.button("채널 찾기", use_container_width=True)
+with col4:
+    btn_channel_videos = st.button("채널 영상", use_container_width=True)
 
-        fetched += len(items)
-        next_token = resp.get("nextPageToken")
-        if not next_token:
-            break
+st.sidebar.markdown("---")
 
-    # 구독자 수 기준 정렬
-    results.sort(key=lambda x: x.get("subs") or 0, reverse=True)
-    return results, cost_used
-
-# ===================================================================
-# 아래부터 Streamlit UI
-# ===================================================================
-
-st.set_page_config(page_title="YouTube 검색기 (Streamlit)", page_icon="🎬", layout="wide")
-
-# API 키 상태 초기화
-init_api_keys_state()
-
-# 세션 상태 기본값
-if "results" not in st.session_state:
-    st.session_state["results"] = []
-if "result_type" not in st.session_state:
-    st.session_state["result_type"] = None
-if "quota_last_cost" not in st.session_state:
-    st.session_state["quota_last_cost"] = 0
-
-# ----------------------------
-# 사이드바 (왼쪽)
-# ----------------------------
-with st.sidebar:
-    st.markdown("### 🔍 검색 설정")
-
-    # 일반 검색어
-    query = st.text_input("일반 검색어", value="")
-
-    col_btn1, col_btn2 = st.columns(2)
-    do_general = col_btn1.button("일반 검색", use_container_width=True)
-    do_trend   = col_btn2.button("트렌드 검색", use_container_width=True)  # 입력칸 없는 트렌드 버튼
-
-    st.markdown("---")
-
-    # 채널 키워드로 채널 찾기
-    ch_keyword = st.text_input("채널 키워드 (채널 찾기)", value="")
-    do_channel_find = st.button("채널 키워드로 채널찾기", use_container_width=True)
-
-    # 채널 검색어로 채널 영상 검색
-    ch_exact = st.text_input("채널 검색어 (채널 이름)", value="")
-    do_channel_videos = st.button("채널 영상 검색", use_container_width=True)
-
-    st.markdown("---")
-
-    with st.expander("📌 검색 옵션 (기간/길이/지역)", expanded=False):
-        period_options = ["30일", "90일", "365일"]
-        period_label = st.selectbox("검색기간(서버)", period_options, index=1)
-
-        client_period_options = ["30일", "90일", "365일", "3650일"]
-        client_period = st.selectbox("업로드 기간(필터)", client_period_options, index=1)
-
-        dur_options = ["전체","쇼츠","롱폼","1분~20분","20분~40분","40분~60분","60분이상"]
-        dur_label = st.selectbox("영상 길이", dur_options, index=0)
-
-        min_views_str = st.selectbox("최소 조회수", ["5,000","10,000","50,000","100,000","500,000","1,000,000"], index=0)
-        max_fetch = st.number_input("가져올 최대 개수", min_value=10, max_value=500, value=50, step=10)
-
-        country_label = st.selectbox("국가/언어", COUNTRY_LIST, index=0)
-        region_code, lang_code = COUNTRY_LANG_MAP.get(country_label, ("KR","ko"))
-
-    st.markdown("---")
-
-    # 아래쪽: API 키 + 최근 검색 키워드
-    st.markdown("### 🔑 YouTube API 키 (아래)")
-
-    existing_keys = API_KEYS_STATE["keys"]
-    keys_text_default = "\n".join(existing_keys) if existing_keys else ""
-    api_keys_text = st.text_area(
-        "API 키 목록 (한 줄에 한 개)",
-        value=keys_text_default,
-        height=80
+with st.sidebar.expander("⚙ 세부 필터", expanded=False):
+    api_period = st.selectbox(
+        "서버 검색기간",
+        ["제한없음","90일","150일","365일","730일","1095일","1825일","3650일"],
+        index=1,
     )
-    if st.button("API 키 저장", use_container_width=True):
-        keys = [line.strip() for line in api_keys_text.splitlines() if line.strip()]
-        save_api_keys_from_user(keys, 0)
-        st.success("API 키 목록을 저장하고 1번 키를 활성화했습니다. (config.json)")
+    upload_period = st.selectbox(
+        "업로드 기간(클라이언트 필터)",
+        ["제한없음","1일","3일","7일","14일","30일","60일","90일","180일","365일"],
+        index=6,
+    )
+    min_views_label = st.selectbox(
+        "최소 조회수",
+        ["5,000","10,000","25,000","50,000","100,000","200,000","500,000","1,000,000"],
+        index=0,
+    )
+    duration_label = st.selectbox(
+        "영상 길이",
+        ["전체","쇼츠","롱폼","1~20분","20~40분","40~60분","60분이상"],
+        index=0,
+    )
+    max_fetch = st.number_input("가져올 최대 개수", 1, 5000, 50, step=10)
+    country_name = st.selectbox("국가/언어", COUNTRY_LIST, index=0)
+    region_code, lang_code = COUNTRY_LANG_MAP[country_name]
 
-    st.markdown("---")
-    st.markdown("### 🕒 최근 검색 키워드")
+st.sidebar.markdown("---")
 
-    recent = get_recent_keywords(days=14, limit=20)
-    if recent:
-        for dt_kst, q in recent:
-            st.write(f"- {format_k_datetime_simple(dt_kst)} · {q}")
+with st.sidebar.expander("⏱ 최근 검색 키워드", expanded=False):
+    recents = get_recent_keywords(30)
+    if not recents:
+        st.write("최근 검색 없음")
     else:
-        st.write("최근 기록 없음")
+        for dt, q in recents:
+            st.write(f"- {dt.strftime('%m-%d %H:%M')} — `{q}`")
 
-    st.markdown("---")
-    today_total = get_today_quota_total()
-    st.caption(f"오늘 사용한 YouTube API 쿼터 추정: {today_total} units\n"
-               f"(마지막 검색: {st.session_state['quota_last_cost']} units)")
+st.sidebar.markdown("---")
+st.sidebar.metric("오늘 사용한 쿼터", f"{get_today_quota_total():,} units")
 
-# ----------------------------
-# 메인 영역 (오른쪽)
-# ----------------------------
-st.title("🎬 YouTube 검색기 (Streamlit 버전)")
+# ==================================================================
+# 메인 영역
+# ==================================================================
 
-# 어떤 버튼이 눌렸는지에 따라 검색 실행
-error_msg = None
+status_placeholder = st.empty()
 
-def _parse_min_views(txt: str) -> int:
-    return int(txt.replace(",", "").replace(" ", ""))
+if "results_df" not in st.session_state:
+    st.session_state.results_df = None
+    st.session_state.last_search_time = None
+    st.session_state.search_type = None  # "video_general","video_trend","channel_find","channel_videos"
 
-def _filter_by_client_period_and_duration(items, client_period_label, dur_label):
-    cutoff = cutoff_dt_from_label_kst(client_period_label)
-    out = []
-    now_kst = datetime.now(KST)
-    for r in items:
-        pub_kst = parse_published_at_to_kst(r["published_at_iso"])
-        if pub_kst < cutoff:
-            continue
-        if not duration_filter_ok(r["duration_sec"], dur_label):
-            continue
-        # 시간당 클릭수 계산
-        d, h = human_elapsed_days_hours(now_kst, pub_kst)
-        total_hours = max(1, d*24 + h)
-        r["clicks_per_hour"] = int(round(r["views"] / total_hours))
-        r["published_kst"] = pub_kst
-        out.append(r)
-    return out
+def apply_client_filters(df: pd.DataFrame, upload_period: str, min_views_label: str) -> pd.DataFrame:
+    if upload_period != "제한없음":
+        days = int(upload_period.replace("일",""))
+        cutoff = datetime.now(KST) - timedelta(days=days)
+        df = df[df["업로드시각"] >= cutoff]
+    min_views = parse_min_views(min_views_label)
+    if "영상조회수" in df.columns:
+        df = df[df["영상조회수"] >= min_views]
+    return df
 
-try:
-    if do_general:
-        if not query.strip():
-            error_msg = "일반 검색어를 입력하세요."
-        else:
-            min_views = _parse_min_views(min_views_str)
-            results, cost = search_videos(
-                query=query.strip(),
-                min_views=min_views,
-                period_label=period_label,
-                duration_label="전체",  # 서버 쿼리는 전체, 클라이언트에서 다시 필터
-                max_fetch=max_fetch,
-                region_code=region_code,
-                lang_code=lang_code
-            )
-            add_quota_usage(cost)
-            st.session_state["quota_last_cost"] = cost
+# 어떤 버튼이 눌렸는지 확인
+mode = None
+if btn_general:
+    mode = "video_general"
+elif btn_trend:
+    mode = "video_trend"
+elif btn_channel_find:
+    mode = "channel_find"
+elif btn_channel_videos:
+    mode = "channel_videos"
 
-            add_to_history(query.strip())
-            append_keyword_log(query.strip())
+if mode is not None:
+    try:
+        if mode in ("video_general", "video_trend"):
+            base_query = (query or "").strip()
+            if not base_query:
+                st.warning("검색어를 입력해주세요.")
+            else:
+                if mode == "video_trend":
+                    append_keyword_log(f"[trend]{base_query}")
+                    status_placeholder.info("트렌드 검색 실행 중...")
+                else:
+                    append_keyword_log(base_query)
+                    status_placeholder.info("일반 검색 실행 중...")
 
-            filtered = _filter_by_client_period_and_duration(results, client_period, dur_label)
+                raw_results, cost_used, breakdown = search_videos(
+                    query=base_query,
+                    min_views=parse_min_views(min_views_label),
+                    api_period_label=api_period,
+                    duration_label=duration_label,
+                    max_fetch=max_fetch,
+                    region_code=region_code,
+                    lang_code=lang_code,
+                )
 
-            st.session_state["results"] = filtered
-            st.session_state["result_type"] = "general"
+                if not raw_results:
+                    st.session_state.results_df = None
+                    st.session_state.search_type = mode
+                    status_placeholder.info("서버 결과 0건")
+                else:
+                    search_dt = datetime.now(KST)
+                    rows = []
+                    for r in raw_results:
+                        pub_kst = parse_published_at_to_kst(r["published_at_iso"])
+                        d, h = human_elapsed_days_hours(search_dt, pub_kst)
+                        total_hours = max(1, d*24 + h)
+                        cph = int(round(r["views"] / total_hours))
+                        rows.append({
+                            "채널명": r["channel_title"],
+                            "등급": calc_grade(cph),
+                            "영상조회수": r["views"],
+                            "시간당클릭": cph,
+                            "영상길이": format_duration_hms(r["duration_sec"]),
+                            "업로드시각": pub_kst,
+                            "경과시간": f"{d}일 {h}시간",
+                            "제목": r["title"],
+                            "URL": r["url"],
+                        })
+                    df = pd.DataFrame(rows)
+                    if not df.empty:
+                        df = apply_client_filters(df, upload_period, min_views_label)
+                    st.session_state.results_df = df
+                    st.session_state.last_search_time = search_dt
+                    st.session_state.search_type = mode
+                    status_placeholder.success(
+                        f"서버 결과: {len(raw_results):,}건 / 필터 후: {len(df):,}건 (이번 쿼터 사용량: {cost_used})"
+                    )
+                add_quota_usage(cost_used)
 
-    elif do_trend:
-        if not query.strip():
-            error_msg = "트렌드 검색도 기본 검색어는 필요합니다."
-        else:
-            min_views = _parse_min_views(min_views_str)
-            results, cost = search_videos(
-                query=query.strip(),
-                min_views=min_views,
-                period_label=period_label,
-                duration_label="전체",
-                max_fetch=max_fetch,
-                region_code=region_code,
-                lang_code=lang_code
-            )
-            add_quota_usage(cost)
-            st.session_state["quota_last_cost"] = cost
+        elif mode == "channel_find":
+            ch_kw = channel_keyword.strip()
+            if not ch_kw:
+                st.warning("채널 키워드를 입력해주세요.")
+            else:
+                append_keyword_log(f"[channel-find]{ch_kw}")
+                status_placeholder.info("채널 검색 실행 중...")
+                ch_results, cost_used, breakdown = search_channels_by_keyword(
+                    keyword=ch_kw,
+                    max_results=max_fetch,
+                    region_code=region_code,
+                    lang_code=lang_code,
+                )
+                rows = []
+                for r in ch_results:
+                    subs = r["subs"]
+                    subs_text = f"{subs:,}" if isinstance(subs, int) else "-"
+                    rows.append({
+                        "채널명": r["channel_title"],
+                        "구독자수": subs_text,
+                        "채널조회수": f"{r['total_views']:,}",
+                        "채널영상수": f"{r['videos']:,}",
+                        "URL": r["url"],
+                    })
+                df = pd.DataFrame(rows)
+                st.session_state.results_df = df
+                st.session_state.last_search_time = datetime.now(KST)
+                st.session_state.search_type = "channel_find"
+                status_placeholder.success(
+                    f"채널 검색 결과: {len(df):,}건 (이번 쿼터 사용량: {cost_used})"
+                )
+                add_quota_usage(cost_used)
 
-            # 트렌드 표시용 태그
-            add_to_history(f"[trend]{query.strip()}")
-            append_keyword_log(f"[trend]{query.strip()}")
+        elif mode == "channel_videos":
+            ch_name = channel_name.strip()
+            if not ch_name:
+                st.warning("채널 검색어(채널 이름)를 입력해주세요.")
+            else:
+                append_keyword_log(f"[channel-video]{ch_name}")
+                status_placeholder.info("채널 영상 검색 실행 중...")
+                raw_results, cost_used, breakdown = search_videos_in_channel_by_name(
+                    channel_name=ch_name,
+                    min_views=parse_min_views(min_views_label),
+                    api_period_label=api_period,
+                    duration_label=duration_label,
+                    max_fetch=max_fetch,
+                    region_code=region_code,
+                    lang_code=lang_code,
+                )
+                if not raw_results:
+                    st.session_state.results_df = None
+                    st.session_state.search_type = "channel_videos"
+                    status_placeholder.info("채널 영상 결과 0건")
+                else:
+                    search_dt = datetime.now(KST)
+                    rows = []
+                    for r in raw_results:
+                        pub_kst = parse_published_at_to_kst(r["published_at_iso"])
+                        d, h = human_elapsed_days_hours(search_dt, pub_kst)
+                        total_hours = max(1, d*24 + h)
+                        cph = int(round(r["views"] / total_hours))
+                        rows.append({
+                            "채널명": r["channel_title"],
+                            "등급": calc_grade(cph),
+                            "영상조회수": r["views"],
+                            "시간당클릭": cph,
+                            "영상길이": format_duration_hms(r["duration_sec"]),
+                            "업로드시각": pub_kst,
+                            "경과시간": f"{d}일 {h}시간",
+                            "제목": r["title"],
+                            "URL": r["url"],
+                        })
+                    df = pd.DataFrame(rows)
+                    if not df.empty:
+                        df = apply_client_filters(df, upload_period, min_views_label)
+                    st.session_state.results_df = df
+                    st.session_state.last_search_time = search_dt
+                    st.session_state.search_type = "channel_videos"
+                    status_placeholder.success(
+                        f"채널 영상 결과: {len(raw_results):,}건 / 필터 후: {len(df):,}건 (이번 쿼터 사용량: {cost_used})"
+                    )
+                add_quota_usage(cost_used)
 
-            filtered = _filter_by_client_period_and_duration(results, client_period, dur_label)
+    except Exception as e:
+        st.error(f"검색 중 오류: {e}")
+        st.session_state.results_df = None
 
-            st.session_state["results"] = filtered
-            st.session_state["result_type"] = "trend"
+# ==================================================================
+# 결과 표시
+# ==================================================================
+df = st.session_state.results_df
+search_type = st.session_state.search_type
 
-    elif do_channel_find:
-        if not ch_keyword.strip():
-            error_msg = "채널 키워드를 입력하세요."
-        else:
-            results, cost = search_channels_by_keyword(
-                keyword=ch_keyword.strip(),
-                max_fetch=max_fetch,
-                region_code=region_code,
-                lang_code=lang_code
-            )
-            add_quota_usage(cost)
-            st.session_state["quota_last_cost"] = cost
-
-            add_to_history(f"[channel-find]{ch_keyword.strip()}")
-            append_keyword_log(f"[channel-find]{ch_keyword.strip()}")
-
-            st.session_state["results"] = results
-            st.session_state["result_type"] = "channel_find"
-
-    elif do_channel_videos:
-        if not ch_exact.strip():
-            error_msg = "채널 검색어(채널 이름)를 입력하세요."
-        else:
-            min_views = _parse_min_views(min_views_str)
-            results, cost = search_videos_in_channel_by_name(
-                channel_query=ch_exact.strip(),
-                min_views=min_views,
-                period_label=period_label,
-                duration_label="전체",
-                max_fetch=max_fetch,
-                region_code=region_code,
-                lang_code=lang_code
-            )
-            add_quota_usage(cost)
-            st.session_state["quota_last_cost"] = cost
-
-            add_to_history(f"[channel]{ch_exact.strip()}")
-            append_keyword_log(f"[channel]{ch_exact.strip()}")
-
-            filtered = _filter_by_client_period_and_duration(results, client_period, dur_label)
-
-            st.session_state["results"] = filtered
-            st.session_state["result_type"] = "channel_videos"
-
-except Exception as e:
-    error_msg = str(e)
-
-if error_msg:
-    st.error(error_msg)
-
-# ----------------------------
-# 결과 제목 / 리스트 표시
-# ----------------------------
-result_type = st.session_state.get("result_type")
-results = st.session_state.get("results") or []
-
-title_map = {
-    "general": "📄 일반 검색 결과 리스트",
-    "trend": "📈 트렌드 검색 결과 리스트",
-    "channel_find": "📂 채널검색 리스트",
-    "channel_videos": "🎞 채널 영상 리스트",
-}
-
-if result_type is None or not results:
-    st.info("왼쪽에서 검색어를 입력하고 버튼을 눌러 검색을 실행하세요.")
+if df is None or df.empty:
+    st.info("아직 검색 결과가 없습니다. 좌측에서 조건을 설정하고 **검색 버튼**을 눌러주세요.")
 else:
-    st.subheader(title_map.get(result_type, "검색 결과 리스트"))
+    # 검색타입에 따른 제목
+    video_title_map = {
+        "video_general": "📊 일반 검색 결과 리스트",
+        "video_trend": "📈 트렌드 검색 결과 리스트",
+        "channel_videos": "🎞 채널 영상 리스트",
+    }
 
-    if result_type in ("general", "trend", "channel_videos"):
-        # 영상 결과 테이블
-        import pandas as pd
-        rows = []
-        for r in results:
-            pub_kst = r.get("published_kst") or parse_published_at_to_kst(r["published_at_iso"])
-            rows.append({
-                "제목": r["title"],
-                "채널명": r.get("channel_title", ""),
-                "조회수": r["views"],
-                "시간당 클릭수": r.get("clicks_per_hour", None),
-                "영상길이": format_duration_hms(r["duration_sec"]),
-                "업로드일(KST)": pub_kst.strftime("%Y-%m-%d"),
-                "URL": r["url"],
-            })
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, height=600)
+    if search_type in ("video_general", "video_trend", "channel_videos"):
+        df_display = df.copy()
+        df_display["링크"] = df_display["URL"]
+        df_display = df_display.drop(columns=["URL"])
+        st.subheader(video_title_map.get(search_type, "📊 영상 결과 리스트"))
+        st.data_editor(
+            df_display,
+            use_container_width=True,
+            height=500,
+            hide_index=True,
+            column_config={
+                "링크": st.column_config.LinkColumn("열기", display_text="열기"),
+            },
+        )
+    elif search_type == "channel_find":
+        df_display = df.copy()
+        df_display["링크"] = df_display["URL"]
+        df_display = df_display.drop(columns=["URL"])
+        st.subheader("📂 채널검색 리스트")
+        st.data_editor(
+            df_display,
+            use_container_width=True,
+            height=500,
+            hide_index=True,
+            column_config={
+                "링크": st.column_config.LinkColumn("채널 열기", display_text="열기"),
+            },
+        )
 
-        # 상단 몇 개 썸네일
-        if PIL_AVAILABLE and results:
-            st.markdown("#### 대표 썸네일 (상위 3개)")
-            thumb_cols = st.columns(min(3, len(results)))
-            for i, col in enumerate(thumb_cols):
-                r = results[i]
-                url = r.get("thumbnail_url")
-                if url:
-                    with col:
-                        st.image(url, use_column_width=True)
-                        st.caption(r["title"][:40] + ("..." if len(r["title"]) > 40 else ""))
-
-    elif result_type == "channel_find":
-        # 채널 리스트
-        import pandas as pd
-        rows = []
-        for c in results:
-            rows.append({
-                "채널명": c["channel_title"],
-                "구독자수": c["subs"],
-                "총조회수": c["total_views"],
-                "영상개수": c["video_count"],
-                "URL": c["url"],
-                "설명": (c["description"] or "")[:120] + ("..." if len(c["description"] or "") > 120 else "")
-            })
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, height=600)
-
+    st.caption("열기 링크를 누르면 새 탭에서 영상 또는 채널이 열립니다.")
