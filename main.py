@@ -69,7 +69,7 @@ if not st.session_state["logged_in"]:
         if check_login(id_input, pw_input):
             st.session_state["logged_in"] = True
             st.success("로그인 성공!")
-            st.experimental_rerun()
+            st.rerun()
         else:
             st.error("로그인 실패. ID 또는 비밀번호를 확인해주세요.")
 
@@ -1180,4 +1180,4 @@ else:
 # 로그아웃 버튼
 if st.sidebar.button("로그아웃", use_container_width=True):
     st.session_state["logged_in"] = False
-    st.experimental_rerun()
+    st.rerun()
