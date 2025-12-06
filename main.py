@@ -689,22 +689,22 @@ st.sidebar.header("검색")
 # 공통 검색어
 search_query = st.sidebar.text_input("검색어", "")
 
-# 검색 버튼 4개
+# 검색 버튼 4개 (아이콘 + 라벨)
 row1_col1, row1_col2 = st.sidebar.columns(2)
 row2_col1, row2_col2 = st.sidebar.columns(2)
 
 with row1_col1:
-    do_general_search = st.button("일반검색", use_container_width=True, key="btn_general")
+    do_general_search = st.button("🔍 일반검색", use_container_width=True, key="btn_general")
 with row1_col2:
-    do_trend_search = st.button("트렌드검색", use_container_width=True, key="btn_trend")
+    do_trend_search = st.button("🔥 트렌드검색", use_container_width=True, key="btn_trend")
 with row2_col1:
-    do_channel_videos_search = st.button("채널영상검색", use_container_width=True, key="btn_channel_videos")
+    do_channel_videos_search = st.button("🎬 채널영상검색", use_container_width=True, key="btn_channel_videos")
 with row2_col2:
-    do_channel_list_search = st.button("키워드채널검색", use_container_width=True, key="btn_channel_list")
+    do_channel_list_search = st.button("📈 키워드채널검색", use_container_width=True, key="btn_channel_list")
 
 st.sidebar.markdown("---")
 
-# 보기 모드
+# 보기 모드 (기본: 그리드 뷰)
 view_mode_label = st.sidebar.radio(
     "보기 모드",
     options=["그리드 뷰", "리스트 뷰", "쇼츠 뷰"],
@@ -719,11 +719,11 @@ elif view_mode_label == "리스트 뷰":
 else:
     view_mode = "shorts"
 
-# 정렬 방식
+# 정렬 방식 (기본 펼침)
 st.session_state.setdefault("sort_key", "등급")
 st.session_state.setdefault("sort_asc", True)
 
-with st.sidebar.expander("정렬 방식", expanded=False):
+with st.sidebar.expander("정렬 방식", expanded=True):
     sort_key = st.selectbox(
         "정렬 기준",
         ["등급", "영상조회수", "시간당클릭", "업로드시각", "구독자수", "채널조회수", "채널영상수"],
@@ -743,7 +743,7 @@ with st.sidebar.expander("정렬 방식", expanded=False):
 
 st.sidebar.markdown("---")
 
-# 세부 필터 (항상 펼쳐진 상태)
+# 세부 필터 (항상 펼침)
 with st.sidebar.expander("⚙ 세부 필터", expanded=True):
     api_period = st.selectbox(
         "서버 검색기간 (YouTube API)",
@@ -1072,8 +1072,9 @@ else:
     else:
         st.subheader("📊 검색 결과 리스트")
 
-    # 쇼츠 뷰
+    # ---------------- 쇼츠 뷰 ----------------
     if view_mode == "shorts":
+        # 영상 계열: 9:16 세로 썸네일
         if mode in ("general", "trend", "channel_videos"):
             thumbs = df_display["썸네일"].astype(str).tolist()
             html_items = []
@@ -1085,15 +1086,18 @@ else:
                 )
             html = (
                 "<style>"
-                ".shorts-container {display:flex;flex-wrap:wrap;justify-content:center;gap:4px;}"
-                ".shorts-item {flex:0 0 32%;max-width:150px;}"
-                ".shorts-img {width:100%;aspect-ratio:9/16;object-fit:cover;border-radius:8px;display:block;}"
-                "@media (max-width:480px){.shorts-item{flex:0 0 32%;}}"
+                ".shorts-container{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 4px;}"
+                ".shorts-item{width:150px;}"
+                ".shorts-img{width:150px;height:266px;object-fit:cover;border-radius:10px;display:block;}"
+                "@media (max-width:480px){.shorts-container{gap:4px 4px;}"
+                ".shorts-item{width:48%;max-width:180px;}"
+                ".shorts-img{width:100%;height:calc(100%*16/9);max-height:280px;}}"
                 "</style>"
                 f'<div class="shorts-container">{"".join(html_items)}</div>'
             )
             st.markdown(html, unsafe_allow_html=True)
 
+        # 채널 리스트: 아이콘 그리드 (기존 그대로, 사용자 만족)
         elif mode == "channel_list":
             thumbs = df_display["썸네일"].astype(str).tolist()
             html_items = []
@@ -1105,9 +1109,9 @@ else:
                 )
             html = (
                 "<style>"
-                ".shorts-container {display:flex;flex-wrap:wrap;justify-content:center;gap:6px;}"
-                ".shorts-item {flex:0 0 22%;max-width:100px;}"
-                ".channel-icon {width:100px;height:100px;object-fit:cover;border-radius:50%;display:block;}"
+                ".shorts-container{display:flex;flex-wrap:wrap;justify-content:center;gap:6px 6px;}"
+                ".shorts-item{flex:0 0 22%;max-width:100px;}"
+                ".channel-icon{width:100px;height:100px;object-fit:cover;border-radius:50%;display:block;}"
                 "@media (max-width:480px){.shorts-item{flex:0 0 25%;}"
                 ".channel-icon{width:80px;height:80px;}}"
                 "</style>"
@@ -1117,7 +1121,7 @@ else:
 
         st.caption("쇼츠 뷰: 이미지를 눌러도 별도 동작은 하지 않습니다.")
 
-    # 그리드 뷰
+    # ---------------- 그리드 뷰 ----------------
     elif view_mode == "grid":
         n_cols = 3
         cols = st.columns(n_cols)
@@ -1154,7 +1158,7 @@ else:
 
         st.caption("👉 텍스트 링크를 눌러 새 탭에서 영상 또는 채널을 열 수 있습니다.")
 
-    # 리스트 뷰
+    # ---------------- 리스트 뷰 ----------------
     else:
         if mode in ("general", "trend", "channel_videos"):
             base_order = [
@@ -1207,7 +1211,7 @@ else:
         st.data_editor(
             df_display,
             use_container_width=True,
-            height=620,
+            height=620,   # 리스트 뷰에서 한 화면에 더 많이 보이도록
             hide_index=True,
             column_order=column_order if column_order else None,
             column_config=column_config,
