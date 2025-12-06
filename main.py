@@ -707,14 +707,12 @@ st.sidebar.header("검색")
 general_query = st.sidebar.text_input("🔍 일반 검색어", "")
 do_general_search = st.sidebar.button("일반 검색 실행", type="primary", use_container_width=True)
 
-# ✅ 썸네일 / 그리드 / 쇼츠 보기
-thumb_col, grid_col = st.sidebar.columns(2)
-with thumb_col:
-    show_thumbnails = st.checkbox("썸네일 보기", value=True)
-with grid_col:
-    grid_view = st.checkbox("그리드 보기", value=False)
-
-shorts_view = st.sidebar.checkbox("쇼츠 보기", value=False)
+# 보기 모드: 리스트 / 그리드 / 쇼츠 (단일 선택)
+view_mode = st.sidebar.selectbox(
+    "보기 모드",
+    ["리스트뷰", "그리드뷰", "쇼츠뷰"],
+    index=0,
+)
 
 st.sidebar.markdown("---")
 
@@ -748,8 +746,8 @@ with st.sidebar.expander("📈 키워드채널검색", expanded=False):
 
 st.sidebar.markdown("---")
 
-# 세부 필터
-with st.sidebar.expander("⚙ 세부 필터", expanded=False):
+# 세부 필터 (항상 펼쳐진 상태로 시작)
+with st.sidebar.expander("⚙ 세부 필터", expanded=True):
     api_period = st.selectbox(
         "서버 검색기간 (YouTube API)",
         ["제한없음","90일","150일","365일","730일","1095일","1825일","3650일"],
@@ -1017,7 +1015,7 @@ except Exception as e:
     st.session_state.results_df = None
 
 # -----------------------------
-# 결과 표시 (테이블 / 그리드 / 쇼츠)
+# 결과 표시 (리스트 / 그리드 / 쇼츠)
 # -----------------------------
 df = st.session_state.results_df
 mode = st.session_state.search_mode
@@ -1044,12 +1042,13 @@ else:
     else:
         st.subheader("📊 검색 결과 리스트")
 
-    # ---------- 쇼츠 보기 ----------
-    if shorts_view:
-        # 쇼츠 영상 모드
+    # ==================================================
+    # 1) 쇼츠뷰 (9:16, 2열, 썸네일만 / 채널이면 100x100 아이콘)
+    # ==================================================
+    if view_mode == "쇼츠뷰":
         if mode == "channel_list":
-            # 채널 아이콘 그리드 (100x100, 아이콘만)
-            n_cols = 5
+            # 채널 아이콘 그리드 (100x100, 아이콘만) - 2열
+            n_cols = 2
             cols = st.columns(n_cols)
             for idx, (_, row) in enumerate(df_display.iterrows()):
                 col = cols[idx % n_cols]
@@ -1057,26 +1056,34 @@ else:
                     thumb = row.get("썸네일", "")
                     if isinstance(thumb, str) and thumb:
                         st.image(thumb, width=100)
+                        st.caption(row.get("채널명", ""))
                 if (idx + 1) % n_cols == 0 and (idx + 1) < len(df_display):
                     cols = st.columns(n_cols)
             st.caption("📺 채널 아이콘을 한눈에 보는 쇼츠 뷰입니다.")
         else:
-            # 일반/트렌드/채널영상검색: 9:16 느낌의 썸네일만 4열 그리드 (가로 150px)
-            n_cols = 4
+            # 일반/트렌드/채널영상검색: 9:16 비율로 크롭된 썸네일, 2열, 가로 150px
+            n_cols = 2
             cols = st.columns(n_cols)
             for idx, (_, row) in enumerate(df_display.iterrows()):
                 col = cols[idx % n_cols]
                 with col:
                     thumb = row.get("썸네일", "")
                     if isinstance(thumb, str) and thumb:
-                        st.image(thumb, width=150)  # 세로 긴 느낌 (실제 비율은 원본에 따름)
+                        # 9:16 비율, 가로 150px, 세로 ~266px로 강제
+                        html = f"""
+                        <div style="width:150px;height:266px;overflow:hidden;border-radius:8px;margin:0 auto;">
+                          <img src="{thumb}" style="width:100%;height:100%;object-fit:cover;" />
+                        </div>
+                        """
+                        st.markdown(html, unsafe_allow_html=True)
                 if (idx + 1) % n_cols == 0 and (idx + 1) < len(df_display):
                     cols = st.columns(n_cols)
-            st.caption("🎞 쇼츠 전용 뷰: 이미지만 촘촘하게 보여줍니다.")
+            st.caption("🎞 쇼츠 전용 뷰: 9:16 비율로 세로 썸네일을 촘촘하게 보여줍니다.")
 
-    # ---------- 그리드 보기 ----------
-    elif grid_view:
-        # 그리드 레이아웃 컬럼 개수
+    # ==================================================
+    # 2) 그리드뷰 (카드 형식)
+    # ==================================================
+    elif view_mode == "그리드뷰":
         if mode == "channel_list":
             n_cols = 3
         else:
@@ -1088,8 +1095,9 @@ else:
             col = cols[idx % n_cols]
             with col:
                 # 썸네일/아이콘
-                if "썸네일" in df_display.columns and isinstance(row.get("썸네일", ""), str) and row["썸네일"]:
-                    st.image(row["썸네일"], use_column_width=True)
+                thumb = row.get("썸네일", "")
+                if isinstance(thumb, str) and thumb:
+                    st.image(thumb, use_column_width=True)
 
                 if mode == "channel_list":
                     # 채널 카드
@@ -1123,12 +1131,10 @@ else:
 
         st.caption("👉 카드의 링크 텍스트를 눌러서 새 탭에서 열 수 있습니다.")
 
-    # ---------- 테이블 보기 ----------
+    # ==================================================
+    # 3) 리스트뷰 (테이블)
+    # ==================================================
     else:
-        # 썸네일 컬럼: 체크 해제 시 제거
-        if not show_thumbnails and "썸네일" in df_display.columns:
-            df_display = df_display.drop(columns=["썸네일"])
-
         # 컬럼 순서
         if mode in ("general", "trend", "channel_videos"):
             base_order = [
@@ -1154,14 +1160,14 @@ else:
             ]
         column_order = [c for c in base_order if c in df_display.columns]
 
-        # 컬럼 설정
+        # 컬럼 설정 (썸네일은 항상 표시)
         column_config = {}
         if "링크" in df_display.columns:
             column_config["링크"] = st.column_config.LinkColumn(
                 "열기",
                 display_text="열기",
             )
-        if show_thumbnails and "썸네일" in df_display.columns:
+        if "썸네일" in df_display.columns:
             column_config["썸네일"] = st.column_config.ImageColumn(
                 "썸네일",
                 help="썸네일 이미지",
