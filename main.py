@@ -268,7 +268,7 @@ def get_youtube_client():
         return build("youtube", "v3", developerKey=key)
 
 # ----------------------------
-# 영상 검색 (키워드 기반)
+# 영상 검색 (키워드 기반 - 일반검색)
 # ----------------------------
 def search_videos(
     query: str,
@@ -359,6 +359,81 @@ def search_videos(
 
         fetched += len(page_ids)
         next_token = search_response.get("nextPageToken")
+        if not next_token:
+            break
+
+    return results_tmp, cost_used, breakdown
+
+# ----------------------------
+# 트렌드 검색 (최근 인기 영상 - 검색어 X)
+# ----------------------------
+def search_trending_videos(
+    min_views: int,
+    duration_label: str,
+    max_fetch: int,
+    region_code: str | None,
+):
+    youtube = get_youtube_client()
+
+    cost_used = 0
+    breakdown = {"videos.list": 0}
+    max_fetch = max(1, min(int(max_fetch or 100), 200))  # 트렌드는 200개 정도면 충분
+
+    results_tmp = []
+    next_token = None
+    fetched = 0
+
+    while fetched < max_fetch:
+        take = min(50, max_fetch - fetched)
+        kwargs = dict(
+            part="snippet,statistics,contentDetails",
+            chart="mostPopular",
+            maxResults=take,
+        )
+        if region_code:
+            kwargs["regionCode"] = region_code
+        if next_token:
+            kwargs["pageToken"] = next_token
+
+        try:
+            resp = youtube.videos().list(**kwargs).execute()
+            cost_used += 1
+            breakdown["videos.list"] += 1
+        except HttpError as e:
+            raise RuntimeError(f"트렌드 API 오류: {e}")
+
+        items = resp.get("items", [])
+        if not items:
+            break
+
+        for item in items:
+            vid = item.get("id", "")
+            snip = item.get("snippet", {}) or {}
+            stats = item.get("statistics", {}) or {}
+            cdet = item.get("contentDetails", {}) or {}
+
+            title = snip.get("title", "")
+            published_at_iso = snip.get("publishedAt", "")
+            view_count = int(stats.get("viewCount", 0))
+            url = f"https://www.youtube.com/watch?v={vid}"
+            duration_sec = parse_duration_iso8601(cdet.get("duration", ""))
+
+            if view_count < min_views:
+                continue
+            if not duration_filter_ok(duration_sec, duration_label):
+                continue
+
+            results_tmp.append({
+                "title": title,
+                "views": view_count,
+                "published_at_iso": published_at_iso,
+                "url": url,
+                "duration_sec": duration_sec,
+                "channel_title": snip.get("channelTitle", ""),
+            })
+
+        fetched += len(items)
+        next_token = resp.get("nextPageToken")
         if not next_token:
             break
 
@@ -567,39 +642,39 @@ def calc_grade(clicks_per_hour: int) -> str:
     return "F"
 
 # ==================================================================
-# 사이드바 UI (검색 / 필터 / 최근검색 / 쿼터)
+# 사이드바 UI
 # ==================================================================
 
 st.sidebar.header("검색")
 
-# 1) 검색어 (공통)
-query = st.sidebar.text_input("검색어", "", placeholder="예: 월드컵 경제학")
+# 1) 일반 검색 (항상 펼쳐져 있는 영역)
+query = st.sidebar.text_input("🔍 일반 검색어", "", placeholder="예: 월드컵 경제학")
+btn_general = st.sidebar.button("일반 검색 실행", use_container_width=True)
 
-# 2) 일반/트렌드 버튼 (2x2 첫 줄)
-col1, col2 = st.sidebar.columns(2)
-with col1:
-    btn_general = st.button("일반 검색", use_container_width=True)
-with col2:
-    btn_trend = st.button("트렌드", use_container_width=True)
+# Separator
+try:
+    st.sidebar.divider()
+except Exception:
+    st.sidebar.markdown("---")
 
-st.sidebar.markdown("**채널 검색**")
+# 2) 나머지 검색방식: 트렌드 / 채널 키워드 / 채널 영상 → 모두 expander로
+with st.sidebar.expander("🔥 트렌드 검색", expanded=False):
+    st.caption("현재 국가 기준으로 YouTube 인기 동영상을 가져옵니다.")
+    btn_trend = st.button("트렌드 가져오기", use_container_width=True, key="btn_trend")
 
-# 3) 채널 키워드 + 채널 검색어
-channel_keyword = st.sidebar.text_input("채널 키워드", "", placeholder="예: 축구 하이라이트")
-channel_name = st.sidebar.text_input("채널 검색어", "", placeholder="예: SPOTV")
+with st.sidebar.expander("📈 채널 키워드로 채널 찾기", expanded=False):
+    channel_keyword = st.text_input("채널 키워드", "", placeholder="예: 축구 하이라이트", key="channel_keyword")
+    btn_channel_find = st.button("채널 검색 실행", use_container_width=True, key="btn_channel_find")
 
-# 4) 채널 찾기 / 채널 영상 버튼 (2x2 둘째 줄)
-col3, col4 = st.sidebar.columns(2)
-with col3:
-    btn_channel_find = st.button("채널 찾기", use_container_width=True)
-with col4:
-    btn_channel_videos = st.button("채널 영상", use_container_width=True)
+with st.sidebar.expander("🎞 채널 이름으로 채널 영상 검색", expanded=False):
+    channel_name = st.text_input("채널 검색어(채널 이름)", "", placeholder="예: SPOTV", key="channel_name")
+    btn_channel_videos = st.button("채널 영상 불러오기", use_container_width=True, key="btn_channel_videos")
 
 st.sidebar.markdown("---")
 
 with st.sidebar.expander("⚙ 세부 필터", expanded=False):
     api_period = st.selectbox(
-        "서버 검색기간",
+        "서버 검색기간(일반검색/채널영상)",
         ["제한없음","90일","150일","365일","730일","1095일","1825일","3650일"],
         index=1,
     )
@@ -647,7 +722,7 @@ if "results_df" not in st.session_state:
     st.session_state.search_type = None  # "video_general","video_trend","channel_find","channel_videos"
 
 def apply_client_filters(df: pd.DataFrame, upload_period: str, min_views_label: str) -> pd.DataFrame:
-    if upload_period != "제한없음":
+    if upload_period != "제한없음" and "업로드시각" in df.columns:
         days = int(upload_period.replace("일",""))
         cutoff = datetime.now(KST) - timedelta(days=days)
         df = df[df["업로드시각"] >= cutoff]
@@ -669,17 +744,14 @@ elif btn_channel_videos:
 
 if mode is not None:
     try:
-        if mode in ("video_general", "video_trend"):
+        # ---------------- 일반 검색 ----------------
+        if mode == "video_general":
             base_query = (query or "").strip()
             if not base_query:
-                st.warning("검색어를 입력해주세요.")
+                st.warning("일반 검색어를 입력해주세요.")
             else:
-                if mode == "video_trend":
-                    append_keyword_log(f"[trend]{base_query}")
-                    status_placeholder.info("트렌드 검색 실행 중...")
-                else:
-                    append_keyword_log(base_query)
-                    status_placeholder.info("일반 검색 실행 중...")
+                append_keyword_log(base_query)
+                status_placeholder.info("일반 검색 실행 중...")
 
                 raw_results, cost_used, breakdown = search_videos(
                     query=base_query,
@@ -693,7 +765,7 @@ if mode is not None:
 
                 if not raw_results:
                     st.session_state.results_df = None
-                    st.session_state.search_type = mode
+                    st.session_state.search_type = "video_general"
                     status_placeholder.info("서버 결과 0건")
                 else:
                     search_dt = datetime.now(KST)
@@ -719,14 +791,61 @@ if mode is not None:
                         df = apply_client_filters(df, upload_period, min_views_label)
                     st.session_state.results_df = df
                     st.session_state.last_search_time = search_dt
-                    st.session_state.search_type = mode
+                    st.session_state.search_type = "video_general"
                     status_placeholder.success(
                         f"서버 결과: {len(raw_results):,}건 / 필터 후: {len(df):,}건 (이번 쿼터 사용량: {cost_used})"
                     )
                 add_quota_usage(cost_used)
 
+        # ---------------- 트렌드 검색 ----------------
+        elif mode == "video_trend":
+            append_keyword_log("[trend]")
+            status_placeholder.info("트렌드 인기 영상 불러오는 중...")
+
+            raw_results, cost_used, breakdown = search_trending_videos(
+                min_views=parse_min_views(min_views_label),
+                duration_label=duration_label,
+                max_fetch=max_fetch,
+                region_code=region_code,
+            )
+
+            if not raw_results:
+                st.session_state.results_df = None
+                st.session_state.search_type = "video_trend"
+                status_placeholder.info("트렌드 결과 0건")
+            else:
+                search_dt = datetime.now(KST)
+                rows = []
+                for r in raw_results:
+                    pub_kst = parse_published_at_to_kst(r["published_at_iso"])
+                    d, h = human_elapsed_days_hours(search_dt, pub_kst)
+                    total_hours = max(1, d*24 + h)
+                    cph = int(round(r["views"] / total_hours))
+                    rows.append({
+                        "채널명": r["channel_title"],
+                        "등급": calc_grade(cph),
+                        "영상조회수": r["views"],
+                        "시간당클릭": cph,
+                        "영상길이": format_duration_hms(r["duration_sec"]),
+                        "업로드시각": pub_kst,
+                        "경과시간": f"{d}일 {h}시간",
+                        "제목": r["title"],
+                        "URL": r["url"],
+                    })
+                df = pd.DataFrame(rows)
+                if not df.empty:
+                    df = apply_client_filters(df, upload_period, min_views_label)
+                st.session_state.results_df = df
+                st.session_state.last_search_time = search_dt
+                st.session_state.search_type = "video_trend"
+                status_placeholder.success(
+                    f"트렌드 결과: {len(raw_results):,}건 / 필터 후: {len(df):,}건 (이번 쿼터 사용량: {cost_used})"
+                )
+            add_quota_usage(cost_used)
+
+        # ---------------- 채널 키워드로 채널 찾기 ----------------
         elif mode == "channel_find":
-            ch_kw = channel_keyword.strip()
+            ch_kw = (channel_keyword or "").strip()
             if not ch_kw:
                 st.warning("채널 키워드를 입력해주세요.")
             else:
@@ -758,8 +877,9 @@ if mode is not None:
                 )
                 add_quota_usage(cost_used)
 
+        # ---------------- 채널 이름으로 채널 영상 검색 ----------------
         elif mode == "channel_videos":
-            ch_name = channel_name.strip()
+            ch_name = (channel_name or "").strip()
             if not ch_name:
                 st.warning("채널 검색어(채널 이름)를 입력해주세요.")
             else:
@@ -821,7 +941,7 @@ search_type = st.session_state.search_type
 if df is None or df.empty:
     st.info("아직 검색 결과가 없습니다. 좌측에서 조건을 설정하고 **검색 버튼**을 눌러주세요.")
 else:
-    # 검색타입에 따른 제목
+    # 검색 타입별 제목
     video_title_map = {
         "video_general": "📊 일반 검색 결과 리스트",
         "video_trend": "📈 트렌드 검색 결과 리스트",
