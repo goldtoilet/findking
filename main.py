@@ -780,13 +780,13 @@ st.sidebar.markdown("---")
 with st.sidebar.expander("⚙ 세부 필터", expanded=True):
     api_period = st.selectbox(
         "서버 검색기간 (YouTube API)",
-        ["제한없음","90일","150일","365일","730일","1095일","1825일","3650일"],
+        ["제한없음","7일","30일","90일","180일","365일","730일"],
         index=1,
         key="api_period",
     )
     upload_period = st.selectbox(
         "업로드 기간(클라이언트 필터)",
-        ["제한없음","1일","3일","7일","14일","30일","60일","90일","180일","365일"],
+        ["제한없음","1일","3일","7일","30일","90일","180일","365일"],
         index=6,
         key="upload_period",
     )
