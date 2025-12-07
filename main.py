@@ -22,6 +22,7 @@ st.set_page_config(
 
 st.markdown(
     """
+<a id="page_top"></a>
 <style>
 .block-container { padding-top: 3rem !important; }
 [data-testid="stDataFrame"] button[kind="icon"] {
@@ -67,7 +68,6 @@ if not st.session_state["logged_in"]:
     st.stop()
 
 KST = timezone(timedelta(hours=9))
-WEEKDAY_KO = ["월요일","화요일","수요일","목요일","금요일","토요일","일요일"]
 
 COUNTRY_LANG_MAP = {
     "미국": ("US", "en"),
@@ -322,7 +322,6 @@ def search_videos(
     published_after = published_after_from_label(api_period_label)
 
     cost_used = 0
-    breakdown = {"search.list": 0, "videos.list": 0}
     max_fetch = max(1, min(int(max_fetch or 100), 5000))
 
     results_tmp = []
@@ -348,7 +347,7 @@ def search_videos(
 
         try:
             search_response = youtube.search().list(**kwargs).execute()
-            cost_used += 100; breakdown["search.list"] += 100
+            cost_used += 100
         except HttpError as e:
             raise RuntimeError(f"Search API 오류: {e}")
 
@@ -365,7 +364,7 @@ def search_videos(
                 part="snippet,statistics,contentDetails",
                 id=",".join(page_ids),
             ).execute()
-            cost_used += 1; breakdown["videos.list"] += 1
+            cost_used += 1
         except HttpError as e:
             raise RuntimeError(f"Videos API 오류: {e}")
 
@@ -412,7 +411,7 @@ def search_videos(
         if not next_token:
             break
 
-    return results_tmp, cost_used, breakdown
+    return results_tmp, cost_used
 
 def search_channels_by_keyword(
     keyword: str,
@@ -445,7 +444,7 @@ def search_channels_by_keyword(
         if "id" in it and "channelId" in it["id"]
     ]
     if not ch_ids:
-        return [], cost_used, {"search.list": 100, "channels.list": 0}
+        return [], cost_used
 
     try:
         ch_resp = youtube.channels().list(
@@ -484,7 +483,7 @@ def search_channels_by_keyword(
         })
 
     results.sort(key=lambda r: (r["subs"] or 0), reverse=True)
-    return results, cost_used, {"search.list": 100, "channels.list": 1}
+    return results, cost_used
 
 def search_videos_in_channel_by_name(
     channel_name: str,
@@ -498,7 +497,6 @@ def search_videos_in_channel_by_name(
     youtube = get_youtube_client()
     published_after = published_after_from_label(api_period_label)
     cost_used = 0
-    breakdown = {"search.list": 0, "videos.list": 0}
 
     kwargs_ch = dict(
         q=channel_name,
@@ -513,13 +511,13 @@ def search_videos_in_channel_by_name(
 
     try:
         ch_resp = youtube.search().list(**kwargs_ch).execute()
-        cost_used += 100; breakdown["search.list"] += 100
+        cost_used += 100
     except HttpError as e:
         raise RuntimeError(f"채널 검색 오류: {e}")
 
     items = ch_resp.get("items", [])
     if not items:
-        return [], cost_used, breakdown
+        return [], cost_used
 
     channel_id = items[0]["id"]["channelId"]
 
@@ -548,7 +546,7 @@ def search_videos_in_channel_by_name(
 
         try:
             v_search = youtube.search().list(**kwargs).execute()
-            cost_used += 100; breakdown["search.list"] += 100
+            cost_used += 100
         except HttpError as e:
             raise RuntimeError(f"채널 영상 검색 오류: {e}")
 
@@ -565,7 +563,7 @@ def search_videos_in_channel_by_name(
                 part="snippet,statistics,contentDetails",
                 id=",".join(page_ids),
             ).execute()
-            cost_used += 1; breakdown["videos.list"] += 1
+            cost_used += 1
         except HttpError as e:
             raise RuntimeError(f"Videos API 오류: {e}")
 
@@ -612,7 +610,7 @@ def search_videos_in_channel_by_name(
         if not next_token:
             break
 
-    return results_tmp, cost_used, breakdown
+    return results_tmp, cost_used
 
 def search_trending_videos(
     max_results: int,
@@ -620,7 +618,7 @@ def search_trending_videos(
     video_category_id: str | None,
 ):
     youtube = get_youtube_client()
-    take = max(1, min(max_results, 50))
+    take = max(1, min(int(max_results or 50), 50))
     kwargs = dict(
         part="snippet,statistics,contentDetails",
         chart="mostPopular",
@@ -669,76 +667,80 @@ def search_trending_videos(
             "channel_title": snip.get("channelTitle", ""),
             "thumbnail_url": thumb_url,
         })
-    return results, cost_used, {"videos.list": 1}
+    return results, cost_used
 
 st.sidebar.caption("🔍 YouTube검색기")
 
-st.session_state.setdefault("sidebar_collapsed", False)
 st.session_state.setdefault("sort_key", "등급")
 st.session_state.setdefault("sort_asc", True)
 st.session_state.setdefault("view_mode_label", "그리드 뷰")
 
-if not st.session_state["sidebar_collapsed"]:
-    with st.sidebar.expander("정렬 방식", expanded=True):
-        sort_key = st.selectbox(
-            "정렬 기준",
-            ["등급", "영상조회수", "시간당클릭", "업로드시각", "구독자수", "채널조회수", "채널영상수"],
-            index=0,
-            key="sort_key_ui",
-        )
-        sort_dir = st.radio(
-            "정렬 방향",
-            ["오름차순", "내림차순"],
-            index=0 if st.session_state["sort_asc"] else 1,
-            horizontal=True,
-            key="sort_dir_ui",
-        )
-        st.session_state["sort_key"] = sort_key
-        st.session_state["sort_asc"] = (sort_dir == "오름차순")
+with st.sidebar.expander("정렬 방식", expanded=True):
+    sort_key = st.selectbox(
+        "정렬 기준",
+        ["등급", "영상조회수", "시간당클릭", "업로드시각", "구독자수", "채널조회수", "채널영상수"],
+        index=0,
+        key="sort_key_ui",
+    )
+    sort_dir = st.radio(
+        "정렬 방향",
+        ["오름차순", "내림차순"],
+        index=0 if st.session_state["sort_asc"] else 1,
+        horizontal=True,
+        key="sort_dir_ui",
+    )
+    st.session_state["sort_key"] = sort_key
+    st.session_state["sort_asc"] = (sort_dir == "오름차순")
 
-    st.sidebar.markdown("---")
+st.sidebar.markdown("---")
 
-    with st.sidebar.expander("⚙ 세부 필터", expanded=True):
-        api_period = st.selectbox(
-            "서버 검색기간 (YouTube API)",
-            ["제한없음","7일","30일","90일","180일","365일","730일"],
-            index=1,
-            key="api_period",
-        )
-        upload_period = st.selectbox(
-            "업로드 기간(클라이언트 필터)",
-            ["제한없음","1일","3일","7일","30일","90일","180일","365일"],
-            index=6,
-            key="upload_period",
-        )
-        min_views_label = st.selectbox(
-            "최소 조회수",
-            ["5,000","10,000","25,000","50,000","100,000","200,000","500,000","1,000,000"],
-            index=0,
-            key="min_views_label",
-        )
-        duration_label = st.selectbox(
-            "영상 길이",
-            ["전체","쇼츠","롱폼","1~20분","20~40분","40~60분","60분이상"],
-            index=0,
-            key="duration_label",
-        )
-        max_fetch = st.number_input(
-            "모든 검색에서 가져올 최대 개수",
-            1, 5000, 50, step=10,
-            key="max_fetch",
-        )
-        country_name = st.selectbox("검색용 국가/언어", COUNTRY_LIST, index=0, key="country_for_search")
-        region_code, lang_code = COUNTRY_LANG_MAP[country_name]
+with st.sidebar.expander("⚙ 세부 필터", expanded=True):
+    api_period = st.selectbox(
+        "서버 검색기간 (YouTube API)",
+        ["제한없음","7일","30일","90일","180일","365일","730일"],
+        index=1,
+        key="api_period",
+    )
+    upload_period = st.selectbox(
+        "업로드 기간(클라이언트 필터)",
+        ["제한없음","1일","3일","7일","30일","90일","180일","365일"],
+        index=6,
+        key="upload_period",
+    )
+    min_views_label = st.selectbox(
+        "최소 조회수",
+        ["5,000","10,000","25,000","50,000","100,000","200,000","500,000","1,000,000"],
+        index=0,
+        key="min_views_label",
+    )
+    duration_label = st.selectbox(
+        "영상 길이",
+        ["전체","쇼츠","롱폼","1~20분","20~40분","40~60분","60분이상"],
+        index=0,
+        key="duration_label",
+    )
+    max_fetch = st.number_input(
+        "모든 검색에서 가져올 최대 개수",
+        1, 5000, 50, step=10,
+        key="max_fetch",
+    )
+    country_name = st.selectbox("검색용 국가/언어", COUNTRY_LIST, index=0, key="country_for_search")
+    region_code, lang_code = COUNTRY_LANG_MAP[country_name]
+
+quota_today = get_today_quota_total()
+st.sidebar.caption(f"오늘 사용 쿼터: {quota_today:,} units")
+
+recents = get_recent_keywords(7)
+if recents:
+    keywords = [q for _, q in recents]
+    labels = [f"`{k}`" for k in keywords]
+    st.sidebar.caption("최근 키워드: " + " · ".join(labels))
 else:
-    st.sidebar.caption("사이드바가 접힌 상태입니다. 하단 버튼으로 다시 펼칠 수 있습니다.")
-    api_period = st.session_state.get("api_period", "7일")
-    upload_period = st.session_state.get("upload_period", "180일")
-    min_views_label = st.session_state.get("min_views_label", "5,000")
-    duration_label = st.session_state.get("duration_label", "전체")
-    max_fetch = st.session_state.get("max_fetch", 50)
-    country_name = st.session_state.get("country_for_search", COUNTRY_LIST[0])
-    region_code, lang_code = COUNTRY_LANG_MAP.get(country_name, ("US", "en"))
+    st.sidebar.caption("최근 키워드: 없음")
+
+if st.sidebar.button("로그아웃", use_container_width=True):
+    st.session_state["logged_in"] = False
+    st.rerun()
 
 status_placeholder = st.empty()
 
@@ -756,40 +758,51 @@ search_mode_options = [
 ]
 st.session_state.setdefault("search_mode_value", "일반 검색")
 st.session_state.setdefault("search_query", "")
+st.session_state.setdefault("trend_category_label", list(TREND_CATEGORY_MAP.keys())[0])
 
-col1, col2, col3, col4 = st.columns([4, 3, 2, 3])
+do_search = False
 
-with col1:
-    search_query = st.text_input(
-        "검색어",
-        value=st.session_state["search_query"],
-        placeholder="검색어 또는 채널명을 입력하세요.",
-        key="search_query_input",
-    )
-    st.session_state["search_query"] = search_query
-
-with col2:
-    search_mode_label = st.selectbox(
-        "검색 모드",
-        options=search_mode_options,
-        index=search_mode_options.index(st.session_state["search_mode_value"]) \
+with st.expander("검색", expanded=True):
+    c1, c2, c3 = st.columns([2, 4, 1])
+    with c1:
+        search_mode_label = st.selectbox(
+            "검색 모드",
+            options=search_mode_options,
+            index=search_mode_options.index(st.session_state["search_mode_value"])
             if st.session_state["search_mode_value"] in search_mode_options else 0,
-        key="search_mode_select",
-    )
-    st.session_state["search_mode_value"] = search_mode_label
+            key="search_mode_select",
+        )
+        st.session_state["search_mode_value"] = search_mode_label
+    with c2:
+        search_query = st.text_input(
+            "검색어 / 채널명",
+            value=st.session_state["search_query"],
+            placeholder="검색어 또는 채널명을 입력하세요.",
+            key="search_query_input",
+        )
+        st.session_state["search_query"] = search_query
+    with c3:
+        do_search = st.button("🔍 검색 실행", use_container_width=True)
 
-with col3:
-    do_search = st.button("🔍 검색 실행", use_container_width=True)
+    if search_mode_label == "트렌드 검색":
+        trend_category_label = st.selectbox(
+            "트렌드 카테고리",
+            list(TREND_CATEGORY_MAP.keys()),
+            index=list(TREND_CATEGORY_MAP.keys()).index(st.session_state.get("trend_category_label", list(TREND_CATEGORY_MAP.keys())[0])),
+            key="trend_category_label",
+        )
+        st.session_state["trend_category_label"] = trend_category_label
+    else:
+        trend_category_label = st.session_state.get("trend_category_label", list(TREND_CATEGORY_MAP.keys())[0])
 
-with col4:
-    view_mode_label = st.selectbox(
-        "보기 모드",
-        options=["그리드 뷰", "리스트 뷰", "쇼츠 뷰"],
-        index=["그리드 뷰", "리스트 뷰", "쇼츠 뷰"].index(
-            st.session_state.get("view_mode_label", "그리드 뷰")
-        ) if st.session_state.get("view_mode_label", "그리드 뷰") in ["그리드 뷰", "리스트 뷰", "쇼츠 뷰"] else 0,
-        key="view_mode_label",
-    )
+view_mode_label = st.selectbox(
+    "보기 모드",
+    options=["그리드 뷰", "리스트 뷰", "쇼츠 뷰"],
+    index=["그리드 뷰", "리스트 뷰", "쇼츠 뷰"].index(
+        st.session_state.get("view_mode_label", "그리드 뷰")
+    ) if st.session_state.get("view_mode_label", "그리드 뷰") in ["그리드 뷰", "리스트 뷰", "쇼츠 뷰"] else 0,
+    key="view_mode_label",
+)
 
 if view_mode_label == "그리드 뷰":
     view_mode = "grid"
@@ -797,21 +810,6 @@ elif view_mode_label == "리스트 뷰":
     view_mode = "list"
 else:
     view_mode = "shorts"
-
-trend_category_label_default = list(TREND_CATEGORY_MAP.keys())[0]
-trend_category_label = st.session_state.get("trend_category_label", trend_category_label_default)
-
-if search_mode_label == "트렌드 검색":
-    trend_category_label = st.selectbox(
-        "트렌드 카테고리",
-        list(TREND_CATEGORY_MAP.keys()),
-        index=list(TREND_CATEGORY_MAP.keys()).index(trend_category_label)
-        if trend_category_label in TREND_CATEGORY_MAP else 0,
-        key="trend_category_label",
-    )
-    st.session_state["trend_category_label"] = trend_category_label
-else:
-    trend_category_label = st.session_state.get("trend_category_label", trend_category_label_default)
 
 def apply_client_filters(df: pd.DataFrame, upload_period: str, min_views_label: str) -> pd.DataFrame:
     if upload_period != "제한없음" and "업로드시각" in df.columns:
@@ -884,7 +882,7 @@ try:
             status_placeholder.info(
                 f"랜덤 트렌드 검색 실행 중... (국가: {rand_country_label}, 카테고리: {rand_cat_label})"
             )
-            raw_results, cost_used, breakdown = search_trending_videos(
+            raw_results, cost_used = search_trending_videos(
                 max_results=max_fetch,
                 region_code=rand_region_code,
                 video_category_id=rand_cat_id,
@@ -931,7 +929,7 @@ try:
             else:
                 append_keyword_log(base_query)
                 status_placeholder.info("일반 영상 검색 실행 중...")
-                raw_results, cost_used, breakdown = search_videos(
+                raw_results, cost_used = search_videos(
                     query=base_query,
                     min_views=parse_min_views(min_views_label),
                     api_period_label=api_period,
@@ -979,7 +977,7 @@ try:
             trend_cat_id = TREND_CATEGORY_MAP.get(trend_category_label)
             append_keyword_log(f"[trend]{trend_category_label}")
             status_placeholder.info("트렌드 검색 실행 중...")
-            raw_results, cost_used, breakdown = search_trending_videos(
+            raw_results, cost_used = search_trending_videos(
                 max_results=max_fetch,
                 region_code=region_code,
                 video_category_id=trend_cat_id,
@@ -1026,7 +1024,7 @@ try:
             else:
                 append_keyword_log(f"[channel_videos]{ch_name}")
                 status_placeholder.info("채널 영상 검색 실행 중...")
-                raw_results, cost_used, breakdown = search_videos_in_channel_by_name(
+                raw_results, cost_used = search_videos_in_channel_by_name(
                     channel_name=ch_name,
                     min_views=parse_min_views(min_views_label),
                     api_period_label=api_period,
@@ -1077,7 +1075,7 @@ try:
             else:
                 append_keyword_log(f"[channel]{ch_kw}")
                 status_placeholder.info("채널 목록 검색 실행 중...")
-                ch_results, cost_used, breakdown = search_channels_by_keyword(
+                ch_results, cost_used = search_channels_by_keyword(
                     keyword=ch_kw,
                     max_results=max_fetch,
                     region_code=region_code,
@@ -1118,7 +1116,7 @@ df = st.session_state.results_df
 mode = st.session_state.search_mode
 
 if df is None or df.empty:
-    st.info("아직 검색 결과가 없습니다. 검색어와 모드를 선택하고 '검색 실행'을 눌러주세요.")
+    st.info("아직 검색 결과가 없습니다. 상단의 '검색'을 열고 검색모드와 검색어를 설정한 뒤 실행해보세요.")
 else:
     df_display = df.copy()
     if "링크URL" in df_display.columns:
@@ -1297,25 +1295,15 @@ else:
 
         st.caption("👉 '열기' 링크를 누르면 새 탭에서 영상 또는 채널이 열립니다.")
 
-st.sidebar.markdown("---")
-
-quota_today = get_today_quota_total()
-st.sidebar.caption(f"오늘 사용 쿼터: {quota_today:,} units")
-
-recents = get_recent_keywords(7)
-if not st.session_state["sidebar_collapsed"]:
-    if recents:
-        keywords = [q for _, q in recents]
-        labels = [f"`{k}`" for k in keywords]
-        st.sidebar.caption("최근 키워드: " + " · ".join(labels))
-    else:
-        st.sidebar.caption("최근 키워드: 없음")
-
-toggle_label = "⬇ 사이드바 접기" if not st.session_state["sidebar_collapsed"] else "⬆ 사이드바 펼치기"
-if st.sidebar.button(toggle_label, use_container_width=True):
-    st.session_state["sidebar_collapsed"] = not st.session_state["sidebar_collapsed"]
-    st.rerun()
-
-if st.sidebar.button("로그아웃", use_container_width=True):
-    st.session_state["logged_in"] = False
-    st.rerun()
+st.markdown(
+    """
+<div style="text-align:center;margin:1.5rem 0 2.5rem;">
+  <a href="#page_top"
+     style="display:inline-block;padding:0.5rem 1.2rem;border-radius:999px;
+            border:1px solid #ccc;text-decoration:none;font-size:13px;">
+    ⬆ 페이지 상단으로
+  </a>
+</div>
+""",
+    unsafe_allow_html=True,
+)
