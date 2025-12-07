@@ -157,11 +157,9 @@ def get_current_api_key() -> str:
     if isinstance(keys, str) and keys.strip():
         first = keys.strip().splitlines()[0]
         return first.strip()
-
     single = st.secrets.get("YOUTUBE_API_KEY")
     if isinstance(single, str) and single.strip():
         return single.strip()
-
     return ""
 
 def get_youtube_client():
@@ -763,8 +761,8 @@ st.session_state.setdefault("trend_category_label", list(TREND_CATEGORY_MAP.keys
 do_search = False
 
 with st.expander("검색", expanded=True):
-    c1, c2, c3 = st.columns([2, 4, 1])
-    with c1:
+    mode_col, _ = st.columns([1, 3])
+    with mode_col:
         search_mode_label = st.selectbox(
             "검색 모드",
             options=search_mode_options,
@@ -773,27 +771,36 @@ with st.expander("검색", expanded=True):
             key="search_mode_select",
         )
         st.session_state["search_mode_value"] = search_mode_label
-    with c2:
-        search_query = st.text_input(
-            "검색어 / 채널명",
-            value=st.session_state["search_query"],
-            placeholder="검색어 또는 채널명을 입력하세요.",
-            key="search_query_input",
-        )
-        st.session_state["search_query"] = search_query
-    with c3:
-        do_search = st.button("🔍 검색 실행", use_container_width=True)
+
+    if search_mode_label in ("일반 검색", "채널 영상 검색", "키워드 채널 검색"):
+        q_col, _ = st.columns([3, 1])
+        with q_col:
+            search_query = st.text_input(
+                "검색어 / 채널명",
+                value=st.session_state["search_query"],
+                placeholder="검색어 또는 채널명을 입력하세요.",
+                key="search_query_input",
+            )
+            st.session_state["search_query"] = search_query
+    else:
+        st.session_state["search_query"] = ""
 
     if search_mode_label == "트렌드 검색":
+        default_label = st.session_state.get("trend_category_label", list(TREND_CATEGORY_MAP.keys())[0])
+        options = list(TREND_CATEGORY_MAP.keys())
+        try:
+            idx = options.index(default_label)
+        except ValueError:
+            idx = 0
         trend_category_label = st.selectbox(
             "트렌드 카테고리",
-            list(TREND_CATEGORY_MAP.keys()),
-            index=list(TREND_CATEGORY_MAP.keys()).index(st.session_state.get("trend_category_label", list(TREND_CATEGORY_MAP.keys())[0])),
-            key="trend_category_label",
+            options,
+            index=idx,
+            key="trend_category_label_widget",
         )
         st.session_state["trend_category_label"] = trend_category_label
-    else:
-        trend_category_label = st.session_state.get("trend_category_label", list(TREND_CATEGORY_MAP.keys())[0])
+
+    do_search = st.button("🔍 검색 실행", use_container_width=True)
 
 view_mode_label = st.selectbox(
     "보기 모드",
@@ -923,7 +930,7 @@ try:
                 )
 
         elif mode_triggered == "general":
-            base_query = (search_query or "").strip()
+            base_query = (st.session_state.get("search_query") or "").strip()
             if not base_query:
                 st.warning("검색어를 입력해주세요.")
             else:
@@ -974,8 +981,10 @@ try:
                     )
 
         elif mode_triggered == "trend":
-            trend_cat_id = TREND_CATEGORY_MAP.get(trend_category_label)
-            append_keyword_log(f"[trend]{trend_category_label}")
+            options = list(TREND_CATEGORY_MAP.keys())
+            trend_label = st.session_state.get("trend_category_label", options[0])
+            trend_cat_id = TREND_CATEGORY_MAP.get(trend_label)
+            append_keyword_log(f"[trend]{trend_label}")
             status_placeholder.info("트렌드 검색 실행 중...")
             raw_results, cost_used = search_trending_videos(
                 max_results=max_fetch,
@@ -1018,7 +1027,7 @@ try:
                 )
 
         elif mode_triggered == "channel_videos":
-            ch_name = (search_query or "").strip()
+            ch_name = (st.session_state.get("search_query") or "").strip()
             if not ch_name:
                 st.warning("채널 이름을 입력해주세요.")
             else:
@@ -1069,7 +1078,7 @@ try:
                     )
 
         elif mode_triggered == "channel_list":
-            ch_kw = (search_query or "").strip()
+            ch_kw = (st.session_state.get("search_query") or "").strip()
             if not ch_kw:
                 st.warning("채널 키워드를 입력해주세요.")
             else:
