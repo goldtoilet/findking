@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 import streamlit as st
 import pandas as pd
+import altair as alt
 
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
@@ -735,33 +736,25 @@ if "results_df" not in st.session_state:
     st.session_state.last_search_time = None
     st.session_state.search_mode = None
 
-search_mode_options = [
-    "일반 검색",
-    "채널 영상 검색",
-    "키워드 채널 검색",
-    "트렌드 검색",
-    "랜덤 트렌드 검색",
-]
-st.session_state.setdefault("search_mode_value", "일반 검색")
+mode_options = ["일반", "채널영상", "키워드 채널", "트렌드", "랜덤 트렌드"]
+st.session_state.setdefault("search_mode_value", mode_options[0])
 st.session_state.setdefault("search_query", "")
 st.session_state.setdefault("trend_category_label", list(TREND_CATEGORY_MAP.keys())[0])
 
 do_search = False
 
 with st.expander("검색", expanded=True):
-    mode_col, _ = st.columns([1, 3])
+    mode_col, _ = st.columns([1.8, 2.2])
     with mode_col:
-        search_mode_label = st.selectbox(
+        search_mode_label = st.radio(
             "검색 모드",
-            options=search_mode_options,
-            index=search_mode_options.index(st.session_state["search_mode_value"])
-            if st.session_state["search_mode_value"] in search_mode_options
-            else 0,
-            key="search_mode_select",
+            options=mode_options,
+            index=mode_options.index(st.session_state["search_mode_value"]),
+            key="search_mode_value",
+            horizontal=True,
         )
-        st.session_state["search_mode_value"] = search_mode_label
 
-    if search_mode_label in ("일반 검색", "채널 영상 검색", "키워드 채널 검색"):
+    if search_mode_label in ("일반", "채널영상", "키워드 채널"):
         q_col, _ = st.columns([3, 1])
         with q_col:
             search_query = st.text_input(
@@ -774,7 +767,7 @@ with st.expander("검색", expanded=True):
     else:
         st.session_state["search_query"] = ""
 
-    if search_mode_label == "트렌드 검색":
+    if search_mode_label == "트렌드":
         default_label = st.session_state.get(
             "trend_category_label", list(TREND_CATEGORY_MAP.keys())[0]
         )
@@ -792,26 +785,6 @@ with st.expander("검색", expanded=True):
         st.session_state["trend_category_label"] = trend_category_label
 
     do_search = st.button("🔍 검색 실행", use_container_width=True)
-
-df_for_chart = st.session_state.get("results_df", None)
-mode_for_chart = st.session_state.get("search_mode", None)
-if (
-    df_for_chart is not None
-    and not getattr(df_for_chart, "empty", True)
-    and mode_for_chart in ("general", "trend", "random_trend", "channel_videos")
-    and "영상조회수" in df_for_chart.columns
-    and "등급" in df_for_chart.columns
-):
-    tmp = df_for_chart.copy()
-    tmp = tmp[tmp["등급"].notna()]
-    if not tmp.empty:
-        tmp_sorted = tmp.sort_values("영상조회수")
-        grade_order = ["H", "G", "F", "E", "D", "C", "B", "A"]
-        grade_map = {g: i + 1 for i, g in enumerate(grade_order)}
-        tmp_sorted["grade_score"] = tmp_sorted["등급"].map(grade_map).fillna(0)
-        tmp_sorted["순위(조회수기준)"] = range(1, len(tmp_sorted) + 1)
-        chart_df = tmp_sorted[["순위(조회수기준)", "grade_score"]].set_index("순위(조회수기준)")
-        st.bar_chart(chart_df, height=180, use_container_width=True)
 
 view_mode_label = st.radio(
     "보기 모드",
@@ -880,15 +853,15 @@ def sort_dataframe(df: pd.DataFrame, mode: str, sort_key: str, ascending: bool) 
 try:
     mode_triggered = None
     if do_search:
-        if search_mode_label == "랜덤 트렌드 검색":
+        if search_mode_label == "랜덤 트렌드":
             mode_triggered = "random_trend"
-        elif search_mode_label == "일반 검색":
+        elif search_mode_label == "일반":
             mode_triggered = "general"
-        elif search_mode_label == "트렌드 검색":
+        elif search_mode_label == "트렌드":
             mode_triggered = "trend"
-        elif search_mode_label == "채널 영상 검색":
+        elif search_mode_label == "채널영상":
             mode_triggered = "channel_videos"
-        elif search_mode_label == "키워드 채널 검색":
+        elif search_mode_label == "키워드 채널":
             mode_triggered = "channel_list"
 
     if mode_triggered is not None:
@@ -1152,6 +1125,55 @@ mode = st.session_state.search_mode
 if df is None or df.empty:
     st.info("아직 검색 결과가 없습니다. 상단의 '검색'을 열고 검색모드와 검색어를 설정한 뒤 실행해보세요.")
 else:
+    if "영상조회수" in df.columns and "등급" in df.columns:
+        tmp = df.copy()
+        tmp = tmp[tmp["등급"].notna()]
+        if not tmp.empty:
+            tmp_sorted = tmp.sort_values("영상조회수")
+            grade_order = ["H", "G", "F", "E", "D", "C", "B", "A"]
+            grade_map = {g: i + 1 for i, g in enumerate(grade_order)}
+            tmp_sorted["grade_score"] = tmp_sorted["등급"].map(grade_map).fillna(0)
+            tmp_sorted["순위(조회수기준)"] = range(1, len(tmp_sorted) + 1)
+            chart_data = tmp_sorted[
+                ["순위(조회수기준)", "grade_score", "제목", "채널명", "영상조회수", "등급"]
+            ]
+
+            grade_axis_expr = (
+                "datum.value == 1 ? 'H' : "
+                "datum.value == 2 ? 'G' : "
+                "datum.value == 3 ? 'F' : "
+                "datum.value == 4 ? 'E' : "
+                "datum.value == 5 ? 'D' : "
+                "datum.value == 6 ? 'C' : "
+                "datum.value == 7 ? 'B' : "
+                "datum.value == 8 ? 'A' : ''"
+            )
+
+            chart = (
+                alt.Chart(chart_data)
+                .mark_bar()
+                .encode(
+                    x=alt.X("순위(조회수기준):O", title="조회수 기준 순위"),
+                    y=alt.Y(
+                        "grade_score:Q",
+                        title="등급",
+                        axis=alt.Axis(
+                            values=[1, 2, 3, 4, 5, 6, 7, 8],
+                            labelExpr=grade_axis_expr,
+                        ),
+                    ),
+                    tooltip=[
+                        alt.Tooltip("제목:N", title="제목"),
+                        alt.Tooltip("채널명:N", title="채널"),
+                        alt.Tooltip("영상조회수:Q", title="조회수", format=",.0f"),
+                        alt.Tooltip("등급:N", title="등급"),
+                    ],
+                )
+                .properties(height=180, width="container")
+            )
+            st.altair_chart(chart, use_container_width=True)
+            st.markdown("<div style='margin-top:0.5rem;'></div>", unsafe_allow_html=True)
+
     df_display = df.copy()
     if "링크URL" in df_display.columns:
         df_display["링크"] = df_display["링크URL"]
