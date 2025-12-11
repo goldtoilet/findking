@@ -12,8 +12,6 @@ import pandas as pd
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from supabase import create_client, Client
-
 st.set_page_config(
     page_title="YouTube검색기",
     page_icon="🔍",
@@ -33,39 +31,30 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-LOGIN_ID_ENV = os.getenv("LOGIN_ID", "")
-LOGIN_PW_ENV = os.getenv("LOGIN_PW", "")
+CONFIG_PATH = "config.json"
 
-st.session_state.setdefault("logged_in", False)
-st.session_state.setdefault("login_id", LOGIN_ID_ENV or "")
-st.session_state.setdefault("login_pw", LOGIN_PW_ENV or "")
+def load_config():
+    if not os.path.exists(CONFIG_PATH):
+        return {"quota_usage": {}, "keyword_log": []}
+    try:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+    if "quota_usage" not in data:
+        data["quota_usage"] = {}
+    if "keyword_log" not in data:
+        data["keyword_log"] = []
+    return data
 
-def check_login(id_text: str, pw_text: str) -> bool:
-    if LOGIN_ID_ENV and LOGIN_PW_ENV:
-        return (id_text == LOGIN_ID_ENV) and (pw_text == LOGIN_PW_ENV)
-    return True
+def save_config(data: dict):
+    try:
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        st.warning(f"config.json 저장 오류: {e}")
 
-if not st.session_state["logged_in"]:
-    st.markdown("### 🔒 YouTube검색기 로그인")
-
-    id_input = st.text_input("로그인 ID", value=st.session_state["login_id"])
-    pw_input = st.text_input("비밀번호", type="password", value=st.session_state["login_pw"])
-
-    col_l, col_r = st.columns([1, 3])
-    with col_l:
-        login_btn = st.button("로그인", type="primary", use_container_width=True)
-
-    if login_btn:
-        st.session_state["login_id"] = id_input
-        st.session_state["login_pw"] = pw_input
-        if check_login(id_input, pw_input):
-            st.session_state["logged_in"] = True
-            st.success("로그인 성공!")
-            st.rerun()
-        else:
-            st.error("로그인 실패. ID 또는 비밀번호를 확인해주세요.")
-
-    st.stop()
+CONFIG_DATA = load_config()
 
 KST = timezone(timedelta(hours=9))
 
@@ -108,48 +97,6 @@ TREND_CATEGORY_MAP = {
     "과학/기술": "28",
 }
 
-@st.cache_resource
-def get_supabase_client() -> Client | None:
-    url = st.secrets.get("SUPABASE_URL")
-    key = st.secrets.get("SUPABASE_SERVICE_KEY")
-    if not url or not key:
-        return None
-    return create_client(url, key)
-
-SUPABASE_BUCKET = st.secrets.get("SUPABASE_BUCKET", "yts-config")
-supabase = get_supabase_client()
-
-def _load_json(filename: str, default):
-    if supabase is None:
-        return default
-    try:
-        res = supabase.storage.from_(SUPABASE_BUCKET).download(filename)
-        if res is None:
-            return default
-        if isinstance(res, bytes):
-            text = res.decode("utf-8")
-        else:
-            text = str(res)
-        return json.loads(text)
-    except Exception:
-        return default
-
-def _save_json(filename: str, data):
-    if supabase is None:
-        return
-    try:
-        payload = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
-        supabase.storage.from_(SUPABASE_BUCKET).upload(
-            path=filename,
-            file=payload,
-            file_options={"content-type": "application/json", "x-upsert": "true"},
-        )
-    except Exception as e:
-        st.warning(f"Supabase 저장 오류({filename}): {e}")
-
-KEYWORD_LOG_PATH  = "yts_keyword_log.json"
-QUOTA_PATH        = "yts_quota_usage.json"
-
 def get_current_api_key() -> str:
     keys = st.secrets.get("YOUTUBE_API_KEYS")
     if isinstance(keys, list) and keys:
@@ -174,14 +121,15 @@ def get_youtube_client():
     except TypeError:
         return build("youtube", "v3", developerKey=key)
 
-def _load_quota_map():
-    return _load_json(QUOTA_PATH, {})
-
-def _save_quota_map(data: dict):
-    _save_json(QUOTA_PATH, data)
-
 def quota_today_key():
     return datetime.now(KST).strftime("%Y-%m-%d")
+
+def _load_quota_map():
+    return CONFIG_DATA.get("quota_usage", {})
+
+def _save_quota_map(data: dict):
+    CONFIG_DATA["quota_usage"] = data
+    save_config(CONFIG_DATA)
 
 def get_today_quota_total() -> int:
     data = _load_quota_map()
@@ -196,10 +144,11 @@ def add_quota_usage(units: int):
     _save_quota_map(data)
 
 def _load_keyword_log():
-    return _load_json(KEYWORD_LOG_PATH, [])
+    return CONFIG_DATA.get("keyword_log", [])
 
 def _save_keyword_log(entries: list):
-    _save_json(KEYWORD_LOG_PATH, entries)
+    CONFIG_DATA["keyword_log"] = entries
+    save_config(CONFIG_DATA)
 
 def append_keyword_log(query: str):
     q = (query or "").strip()
@@ -215,7 +164,7 @@ def get_recent_keywords(limit: int = 30):
     out = []
     for item in entries:
         ts = item.get("ts")
-        q  = item.get("q")
+        q = item.get("q")
         if not ts or not q:
             continue
         try:
@@ -262,12 +211,15 @@ def parse_duration_iso8601(iso_dur: str) -> int:
             num += ch
         else:
             if ch == "H" and num:
-                h = int(num); num = ""
+                h = int(num)
+                num = ""
             elif ch == "M" and num:
-                m = int(num); num = ""
+                m = int(num)
+                num = ""
             elif ch == "S" and num:
-                s = int(num); num = ""
-    return h*3600 + m*60 + s
+                s = int(num)
+                num = ""
+    return h * 3600 + m * 60 + s
 
 def format_duration_hms(seconds: int) -> str:
     if seconds <= 0:
@@ -280,13 +232,20 @@ def format_duration_hms(seconds: int) -> str:
     return f"{m}:{s:02d}"
 
 def duration_filter_ok(seconds: int, label: str) -> bool:
-    if label == "전체": return True
-    if label == "쇼츠": return seconds < 60
-    if label == "롱폼": return seconds >= 60
-    if label == "1~20분": return 60 <= seconds < 20*60
-    if label == "20~40분": return 20*60 <= seconds < 40*60
-    if label == "40~60분": return 40*60 <= seconds < 60*60
-    if label == "60분이상": return seconds >= 60*60
+    if label == "전체":
+        return True
+    if label == "쇼츠":
+        return seconds < 60
+    if label == "롱폼":
+        return seconds >= 60
+    if label == "1~20분":
+        return 60 <= seconds < 20 * 60
+    if label == "20~40분":
+        return 20 * 60 <= seconds < 40 * 60
+    if label == "40~60분":
+        return 40 * 60 <= seconds < 60 * 60
+    if label == "60분이상":
+        return seconds >= 60 * 60
     return True
 
 def parse_min_views(text: str) -> int:
@@ -298,13 +257,20 @@ def parse_min_views(text: str) -> int:
 
 def calc_grade(clicks_per_hour: int) -> str:
     v = clicks_per_hour
-    if v >= 5000: return "A"
-    if v >= 2000: return "B"
-    if v >= 1000: return "C"
-    if v >= 500:  return "D"
-    if v >= 300:  return "E"
-    if v >= 100:  return "F"
-    if v >= 50:   return "G"
+    if v >= 5000:
+        return "A"
+    if v >= 2000:
+        return "B"
+    if v >= 1000:
+        return "C"
+    if v >= 500:
+        return "D"
+    if v >= 300:
+        return "E"
+    if v >= 100:
+        return "F"
+    if v >= 50:
+        return "G"
     return "H"
 
 def search_videos(
@@ -394,15 +360,17 @@ def search_videos(
             if not duration_filter_ok(duration_sec, duration_label):
                 continue
 
-            results_tmp.append({
-                "title": title,
-                "views": view_count,
-                "published_at_iso": published_at_iso,
-                "url": url,
-                "duration_sec": duration_sec,
-                "channel_title": snip.get("channelTitle", ""),
-                "thumbnail_url": thumb_url,
-            })
+            results_tmp.append(
+                {
+                    "title": title,
+                    "views": view_count,
+                    "published_at_iso": published_at_iso,
+                    "url": url,
+                    "duration_sec": duration_sec,
+                    "channel_title": snip.get("channelTitle", ""),
+                    "thumbnail_url": thumb_url,
+                }
+            )
 
         fetched += len(page_ids)
         next_token = search_response.get("nextPageToken")
@@ -458,7 +426,11 @@ def search_channels_by_keyword(
         cid = c.get("id", "")
         sn = c.get("snippet", {}) or {}
         stt = c.get("statistics", {}) or {}
-        subs = int(stt.get("subscriberCount", 0)) if stt.get("subscriberCount") is not None else None
+        subs = (
+            int(stt.get("subscriberCount", 0))
+            if stt.get("subscriberCount") is not None
+            else None
+        )
         total_views = int(stt.get("viewCount", 0))
         videos = int(stt.get("videoCount", 0))
         url = f"https://www.youtube.com/channel/{cid}" if cid else ""
@@ -471,14 +443,16 @@ def search_channels_by_keyword(
             or ""
         )
 
-        results.append({
-            "channel_title": sn.get("title", ""),
-            "subs": subs,
-            "total_views": total_views,
-            "videos": videos,
-            "url": url,
-            "thumbnail_url": thumb_url,
-        })
+        results.append(
+            {
+                "channel_title": sn.get("title", ""),
+                "subs": subs,
+                "total_views": total_views,
+                "videos": videos,
+                "url": url,
+                "thumbnail_url": thumb_url,
+            }
+        )
 
     results.sort(key=lambda r: (r["subs"] or 0), reverse=True)
     return results, cost_used
@@ -593,15 +567,17 @@ def search_videos_in_channel_by_name(
             if not duration_filter_ok(duration_sec, duration_label):
                 continue
 
-            results_tmp.append({
-                "title": title,
-                "views": view_count,
-                "published_at_iso": published_at_iso,
-                "url": url,
-                "duration_sec": duration_sec,
-                "channel_title": snip.get("channelTitle", ""),
-                "thumbnail_url": thumb_url,
-            })
+            results_tmp.append(
+                {
+                    "title": title,
+                    "views": view_count,
+                    "published_at_iso": published_at_iso,
+                    "url": url,
+                    "duration_sec": duration_sec,
+                    "channel_title": snip.get("channelTitle", ""),
+                    "thumbnail_url": thumb_url,
+                }
+            )
 
         fetched += len(page_ids)
         next_token = v_search.get("nextPageToken")
@@ -656,15 +632,17 @@ def search_trending_videos(
             or ""
         )
 
-        results.append({
-            "title": title,
-            "views": view_count,
-            "published_at_iso": published_at_iso,
-            "url": url,
-            "duration_sec": duration_sec,
-            "channel_title": snip.get("channelTitle", ""),
-            "thumbnail_url": thumb_url,
-        })
+        results.append(
+            {
+                "title": title,
+                "views": view_count,
+                "published_at_iso": published_at_iso,
+                "url": url,
+                "duration_sec": duration_sec,
+                "channel_title": snip.get("channelTitle", ""),
+                "thumbnail_url": thumb_url,
+            }
+        )
     return results, cost_used
 
 st.sidebar.caption("🔍 YouTube검색기")
@@ -688,41 +666,55 @@ with st.sidebar.expander("정렬 방식", expanded=True):
         key="sort_dir_ui",
     )
     st.session_state["sort_key"] = sort_key
-    st.session_state["sort_asc"] = (sort_dir == "오름차순")
+    st.session_state["sort_asc"] = sort_dir == "오름차순"
 
 st.sidebar.markdown("---")
 
 with st.sidebar.expander("⚙ 세부 필터", expanded=True):
     api_period = st.selectbox(
         "서버 검색기간 (YouTube API)",
-        ["제한없음","7일","30일","90일","180일","365일","730일"],
+        ["제한없음", "7일", "30일", "90일", "180일", "365일", "730일"],
         index=1,
         key="api_period",
     )
     upload_period = st.selectbox(
         "업로드 기간(클라이언트 필터)",
-        ["제한없음","1일","3일","7일","30일","90일","180일","365일"],
+        ["제한없음", "1일", "3일", "7일", "30일", "90일", "180일", "365일"],
         index=6,
         key="upload_period",
     )
     min_views_label = st.selectbox(
         "최소 조회수",
-        ["5,000","10,000","25,000","50,000","100,000","200,000","500,000","1,000,000"],
+        [
+            "5,000",
+            "10,000",
+            "25,000",
+            "50,000",
+            "100,000",
+            "200,000",
+            "500,000",
+            "1,000,000",
+        ],
         index=0,
         key="min_views_label",
     )
     duration_label = st.selectbox(
         "영상 길이",
-        ["전체","쇼츠","롱폼","1~20분","20~40분","40~60분","60분이상"],
+        ["전체", "쇼츠", "롱폼", "1~20분", "20~40분", "40~60분", "60분이상"],
         index=0,
         key="duration_label",
     )
     max_fetch = st.number_input(
         "모든 검색에서 가져올 최대 개수",
-        1, 5000, 50, step=10,
+        1,
+        5000,
+        50,
+        step=10,
         key="max_fetch",
     )
-    country_name = st.selectbox("검색용 국가/언어", COUNTRY_LIST, index=0, key="country_for_search")
+    country_name = st.selectbox(
+        "검색용 국가/언어", COUNTRY_LIST, index=0, key="country_for_search"
+    )
     region_code, lang_code = COUNTRY_LANG_MAP[country_name]
 
 quota_today = get_today_quota_total()
@@ -735,10 +727,6 @@ if recents:
     st.sidebar.caption("최근 키워드: " + " · ".join(labels))
 else:
     st.sidebar.caption("최근 키워드: 없음")
-
-if st.sidebar.button("로그아웃", use_container_width=True):
-    st.session_state["logged_in"] = False
-    st.rerun()
 
 status_placeholder = st.empty()
 
@@ -767,7 +755,8 @@ with st.expander("검색", expanded=True):
             "검색 모드",
             options=search_mode_options,
             index=search_mode_options.index(st.session_state["search_mode_value"])
-            if st.session_state["search_mode_value"] in search_mode_options else 0,
+            if st.session_state["search_mode_value"] in search_mode_options
+            else 0,
             key="search_mode_select",
         )
         st.session_state["search_mode_value"] = search_mode_label
@@ -786,7 +775,9 @@ with st.expander("검색", expanded=True):
         st.session_state["search_query"] = ""
 
     if search_mode_label == "트렌드 검색":
-        default_label = st.session_state.get("trend_category_label", list(TREND_CATEGORY_MAP.keys())[0])
+        default_label = st.session_state.get(
+            "trend_category_label", list(TREND_CATEGORY_MAP.keys())[0]
+        )
         options = list(TREND_CATEGORY_MAP.keys())
         try:
             idx = options.index(default_label)
@@ -807,7 +798,10 @@ view_mode_label = st.selectbox(
     options=["그리드 뷰", "리스트 뷰", "쇼츠 뷰"],
     index=["그리드 뷰", "리스트 뷰", "쇼츠 뷰"].index(
         st.session_state.get("view_mode_label", "그리드 뷰")
-    ) if st.session_state.get("view_mode_label", "그리드 뷰") in ["그리드 뷰", "리스트 뷰", "쇼츠 뷰"] else 0,
+    )
+    if st.session_state.get("view_mode_label", "그리드 뷰")
+    in ["그리드 뷰", "리스트 뷰", "쇼츠 뷰"]
+    else 0,
     key="view_mode_label",
 )
 
@@ -820,7 +814,7 @@ else:
 
 def apply_client_filters(df: pd.DataFrame, upload_period: str, min_views_label: str) -> pd.DataFrame:
     if upload_period != "제한없음" and "업로드시각" in df.columns:
-        days = int(upload_period.replace("일",""))
+        days = int(upload_period.replace("일", ""))
         cutoff = datetime.now(KST) - timedelta(days=days)
         df = df[df["업로드시각"] >= cutoff]
     min_views = parse_min_views(min_views_label)
@@ -841,20 +835,20 @@ def sort_dataframe(df: pd.DataFrame, mode: str, sort_key: str, ascending: bool) 
         sort_key = key_fallback
 
     if sort_key == "등급":
-        order = ["A","B","C","D","E","F","G","H"]
+        order = ["A", "B", "C", "D", "E", "F", "G", "H"]
         cat = pd.Categorical(df["등급"], categories=order, ordered=True)
         df = df.assign(_grade_cat=cat)
         df = df.sort_values("_grade_cat", ascending=ascending, kind="mergesort")
         return df.drop(columns=["_grade_cat"])
 
-    if sort_key in ["영상조회수","시간당클릭"]:
+    if sort_key in ["영상조회수", "시간당클릭"]:
         return df.sort_values(sort_key, ascending=ascending, kind="mergesort")
 
     if sort_key == "업로드시각":
         return df.sort_values("업로드시각", ascending=ascending, kind="mergesort")
 
-    if sort_key in ["구독자수","채널조회수","채널영상수"]:
-        tmp = df[sort_key].astype(str).str.replace(",","").str.replace(" ","")
+    if sort_key in ["구독자수", "채널조회수", "채널영상수"]:
+        tmp = df[sort_key].astype(str).str.replace(",", "").str.replace(" ", "")
         num = pd.to_numeric(tmp, errors="coerce").fillna(0)
         df = df.assign(_num=num)
         df = df.sort_values("_num", ascending=ascending, kind="mergesort")
@@ -905,20 +899,22 @@ try:
                 for r in raw_results:
                     pub_kst = parse_published_at_to_kst(r["published_at_iso"])
                     d, h = human_elapsed_days_hours(search_dt, pub_kst)
-                    total_hours = max(1, d*24 + h)
+                    total_hours = max(1, d * 24 + h)
                     cph = int(round(r["views"] / total_hours))
-                    rows.append({
-                        "썸네일": r.get("thumbnail_url", ""),
-                        "채널명": r["channel_title"],
-                        "등급": calc_grade(cph),
-                        "영상조회수": r["views"],
-                        "시간당클릭": cph,
-                        "영상길이": format_duration_hms(r["duration_sec"]),
-                        "업로드시각": pub_kst,
-                        "경과시간": f"{d}일 {h}시간",
-                        "제목": r["title"],
-                        "링크URL": r["url"],
-                    })
+                    rows.append(
+                        {
+                            "썸네일": r.get("thumbnail_url", ""),
+                            "채널명": r["channel_title"],
+                            "등급": calc_grade(cph),
+                            "영상조회수": r["views"],
+                            "시간당클릭": cph,
+                            "영상길이": format_duration_hms(r["duration_sec"]),
+                            "업로드시각": pub_kst,
+                            "경과시간": f"{d}일 {h}시간",
+                            "제목": r["title"],
+                            "링크URL": r["url"],
+                        }
+                    )
                 df = pd.DataFrame(rows)
                 if not df.empty:
                     df = apply_client_filters(df, upload_period, min_views_label)
@@ -956,20 +952,22 @@ try:
                     for r in raw_results:
                         pub_kst = parse_published_at_to_kst(r["published_at_iso"])
                         d, h = human_elapsed_days_hours(search_dt, pub_kst)
-                        total_hours = max(1, d*24 + h)
+                        total_hours = max(1, d * 24 + h)
                         cph = int(round(r["views"] / total_hours))
-                        rows.append({
-                            "썸네일": r.get("thumbnail_url", ""),
-                            "채널명": r["channel_title"],
-                            "등급": calc_grade(cph),
-                            "영상조회수": r["views"],
-                            "시간당클릭": cph,
-                            "영상길이": format_duration_hms(r["duration_sec"]),
-                            "업로드시각": pub_kst,
-                            "경과시간": f"{d}일 {h}시간",
-                            "제목": r["title"],
-                            "링크URL": r["url"],
-                        })
+                        rows.append(
+                            {
+                                "썸네일": r.get("thumbnail_url", ""),
+                                "채널명": r["channel_title"],
+                                "등급": calc_grade(cph),
+                                "영상조회수": r["views"],
+                                "시간당클릭": cph,
+                                "영상길이": format_duration_hms(r["duration_sec"]),
+                                "업로드시각": pub_kst,
+                                "경과시간": f"{d}일 {h}시간",
+                                "제목": r["title"],
+                                "링크URL": r["url"],
+                            }
+                        )
                     df = pd.DataFrame(rows)
                     if not df.empty:
                         df = apply_client_filters(df, upload_period, min_views_label)
@@ -1002,20 +1000,22 @@ try:
                 for r in raw_results:
                     pub_kst = parse_published_at_to_kst(r["published_at_iso"])
                     d, h = human_elapsed_days_hours(search_dt, pub_kst)
-                    total_hours = max(1, d*24 + h)
+                    total_hours = max(1, d * 24 + h)
                     cph = int(round(r["views"] / total_hours))
-                    rows.append({
-                        "썸네일": r.get("thumbnail_url", ""),
-                        "채널명": r["channel_title"],
-                        "등급": calc_grade(cph),
-                        "영상조회수": r["views"],
-                        "시간당클릭": cph,
-                        "영상길이": format_duration_hms(r["duration_sec"]),
-                        "업로드시각": pub_kst,
-                        "경과시간": f"{d}일 {h}시간",
-                        "제목": r["title"],
-                        "링크URL": r["url"],
-                    })
+                    rows.append(
+                        {
+                            "썸네일": r.get("thumbnail_url", ""),
+                            "채널명": r["channel_title"],
+                            "등급": calc_grade(cph),
+                            "영상조회수": r["views"],
+                            "시간당클릭": cph,
+                            "영상길이": format_duration_hms(r["duration_sec"]),
+                            "업로드시각": pub_kst,
+                            "경과시간": f"{d}일 {h}시간",
+                            "제목": r["title"],
+                            "링크URL": r["url"],
+                        }
+                    )
                 df = pd.DataFrame(rows)
                 if not df.empty:
                     df = apply_client_filters(df, upload_period, min_views_label)
@@ -1053,20 +1053,22 @@ try:
                     for r in raw_results:
                         pub_kst = parse_published_at_to_kst(r["published_at_iso"])
                         d, h = human_elapsed_days_hours(search_dt, pub_kst)
-                        total_hours = max(1, d*24 + h)
+                        total_hours = max(1, d * 24 + h)
                         cph = int(round(r["views"] / total_hours))
-                        rows.append({
-                            "썸네일": r.get("thumbnail_url", ""),
-                            "채널명": r["channel_title"],
-                            "등급": calc_grade(cph),
-                            "영상조회수": r["views"],
-                            "시간당클릭": cph,
-                            "영상길이": format_duration_hms(r["duration_sec"]),
-                            "업로드시각": pub_kst,
-                            "경과시간": f"{d}일 {h}시간",
-                            "제목": r["title"],
-                            "링크URL": r["url"],
-                        })
+                        rows.append(
+                            {
+                                "썸네일": r.get("thumbnail_url", ""),
+                                "채널명": r["channel_title"],
+                                "등급": calc_grade(cph),
+                                "영상조회수": r["views"],
+                                "시간당클릭": cph,
+                                "영상길이": format_duration_hms(r["duration_sec"]),
+                                "업로드시각": pub_kst,
+                                "경과시간": f"{d}일 {h}시간",
+                                "제목": r["title"],
+                                "링크URL": r["url"],
+                            }
+                        )
                     df = pd.DataFrame(rows)
                     if not df.empty:
                         df = apply_client_filters(df, upload_period, min_views_label)
@@ -1101,14 +1103,16 @@ try:
                     for r in ch_results:
                         subs = r["subs"]
                         subs_text = f"{subs:,}" if isinstance(subs, int) else "-"
-                        df_rows.append({
-                            "썸네일": r.get("thumbnail_url", ""),
-                            "채널명": r["channel_title"],
-                            "구독자수": subs_text,
-                            "채널조회수": f"{r['total_views']:,}",
-                            "채널영상수": f"{r['videos']:,}",
-                            "링크URL": r["url"],
-                        })
+                        df_rows.append(
+                            {
+                                "썸네일": r.get("thumbnail_url", ""),
+                                "채널명": r["channel_title"],
+                                "구독자수": subs_text,
+                                "채널조회수": f"{r['total_views']:,}",
+                                "채널영상수": f"{r['videos']:,}",
+                                "링크URL": r["url"],
+                            }
+                        )
                     df = pd.DataFrame(df_rows)
                     st.session_state.results_df = df
                     st.session_state.last_search_time = search_dt
@@ -1160,7 +1164,7 @@ else:
                 html_items.append(
                     '<div class="shorts-item">'
                     f'  <div class="shorts-frame" style="background-image:url(\'{url}\');"></div>'
-                    '</div>'
+                    "</div>"
                 )
             html = (
                 "<style>"
@@ -1212,7 +1216,11 @@ else:
         for idx, (_, row) in enumerate(df_display.iterrows()):
             col = cols[idx % n_cols]
             with col:
-                if "썸네일" in df_display.columns and isinstance(row["썸네일"], str) and row["썸네일"]:
+                if (
+                    "썸네일" in df_display.columns
+                    and isinstance(row["썸네일"], str)
+                    and row["썸네일"]
+                ):
                     st.image(row["썸네일"], use_column_width=True)
 
                 if mode == "channel_list":
