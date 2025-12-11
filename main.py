@@ -650,6 +650,7 @@ st.sidebar.caption("🔍 YouTube검색기")
 
 st.session_state.setdefault("sort_key", "등급")
 st.session_state.setdefault("sort_asc", True)
+# 기본 보기 모드를 리스트 뷰로 설정
 st.session_state.setdefault("view_mode_label", "리스트 뷰")
 
 with st.sidebar.expander("정렬 방식", expanded=True):
@@ -1106,15 +1107,16 @@ if df is None or df.empty:
     st.info("아직 검색 결과가 없습니다. 상단의 '검색'을 열고 검색모드와 검색어를 설정한 뒤 실행해보세요.")
 else:
     if "영상조회수" in df.columns and "등급" in df.columns:
-        with st.expander("조회수 분포 그래프", expanded=True):
-            tmp = df.copy()
-            tmp = tmp[tmp["등급"].notna()]
-            if not tmp.empty:
-                tmp_sorted = tmp.sort_values("영상조회수", ascending=False)
-                tmp_sorted["순위(조회수기준)"] = range(1, len(tmp_sorted) + 1)
-                chart_data = tmp_sorted[
-                    ["순위(조회수기준)", "영상조회수", "제목", "채널명", "등급"]
-                ]
+        tmp = df.copy()
+        tmp = tmp[tmp["등급"].notna()]
+        if not tmp.empty:
+            tmp_sorted = tmp.sort_values("영상조회수", ascending=False)
+            tmp_sorted["순위(조회수기준)"] = range(1, len(tmp_sorted) + 1)
+            chart_data = tmp_sorted[
+                ["순위(조회수기준)", "영상조회수", "제목", "채널명", "등급"]
+            ]
+            # 조회수 분포 그래프를 disclosure(expander) 안에 넣고, 높이를 3배(540)로 증가
+            with st.expander("📈 조회수 분포 그래프", expanded=True):
                 chart = (
                     alt.Chart(chart_data)
                     .mark_bar()
@@ -1131,18 +1133,17 @@ else:
                     .properties(height=540, width="container")
                 )
                 st.altair_chart(chart, use_container_width=True)
-            else:
-                st.caption("그래프를 표시할 데이터가 없습니다.")
+                st.markdown("<div style='margin-top:0.5rem;'></div>", unsafe_allow_html=True)
+
+    # 보기 모드: 왼쪽부터 리스트 뷰, 그리드 뷰, 쇼츠 뷰
+    options_view = ["리스트 뷰", "그리드 뷰", "쇼츠 뷰"]
+    default_label = st.session_state.get("view_mode_label", "리스트 뷰")
+    idx = options_view.index(default_label) if default_label in options_view else 0
 
     view_mode_label = st.radio(
         "보기 모드",
-        options=["그리드 뷰", "리스트 뷰", "쇼츠 뷰"],
-        index=["그리드 뷰", "리스트 뷰", "쇼츠 뷰"].index(
-            st.session_state.get("view_mode_label", "리스트 뷰")
-        )
-        if st.session_state.get("view_mode_label", "리스트 뷰")
-        in ["그리드 뷰", "리스트 뷰", "쇼츠 뷰"]
-        else 1,
+        options=options_view,
+        index=idx,
         key="view_mode_label",
         horizontal=True,
     )
@@ -1166,207 +1167,204 @@ else:
         ascending=st.session_state["sort_asc"],
     )
 
-    left_col, right_col = st.columns([5, 1])
+    if mode == "general":
+        st.subheader("📊 일반 검색 결과 리스트")
+    elif mode in ("trend", "random_trend"):
+        st.subheader("🔥 트렌드 검색 결과 리스트")
+    elif mode == "channel_videos":
+        st.subheader("🎬 채널 영상 리스트")
+    elif mode == "channel_list":
+        st.subheader("📺 채널검색 리스트")
+    else:
+        st.subheader("📊 검색 결과 리스트")
 
-    with left_col:
-        if mode == "general":
-            st.subheader("📊 일반 검색 결과 리스트")
-        elif mode in ("trend", "random_trend"):
-            st.subheader("🔥 트렌드 검색 결과 리스트")
-        elif mode == "channel_videos":
-            st.subheader("🎬 채널 영상 리스트")
+    if view_mode == "shorts":
+        if mode in ("general", "trend", "random_trend", "channel_videos"):
+            html_items = []
+            for _, row in df_display.iterrows():
+                thumb = str(row.get("썸네일", "") or "")
+                if not thumb:
+                    continue
+                ch = str(row.get("채널명", "") or "")
+                link = str(row.get("링크", "") or "")
+                channel_html = (
+                    f'<div class="shorts-meta-channel">{ch}</div>' if ch else ""
+                )
+                link_html = (
+                    f'<a href="{link}" target="_blank" class="shorts-meta-link">영상 열기</a>'
+                    if link
+                    else ""
+                )
+                meta_html = ""
+                if channel_html or link_html:
+                    meta_html = f'<div class="shorts-meta">{channel_html}{link_html}</div>'
+                html_items.append(
+                    '<div class="shorts-item">'
+                    f'  <div class="shorts-frame" style="background-image:url(\'{thumb}\');"></div>'
+                    f'  {meta_html}'
+                    "</div>"
+                )
+            html = (
+                "<style>"
+                ".shorts-container{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 4px;}"
+                ".shorts-item{flex:0 0 23%;max-width:170px;}"
+                ".shorts-frame{position:relative;width:100%;height:0;padding-bottom:177%;"
+                "overflow:hidden;border-radius:10px;background:#000;"
+                "background-size:cover;background-position:center center;background-repeat:no-repeat;}"
+                ".shorts-meta{display:flex;justify-content:space-between;align-items:center;"
+                "margin-top:2px;font-size:11px;line-height:1.2;}"
+                ".shorts-meta-channel{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+                "padding-right:4px;}"
+                ".shorts-meta-link{text-decoration:none;border:1px solid #ccc;border-radius:999px;"
+                "padding:1px 6px;font-size:11px;}"
+                "@media (max-width:480px){"
+                ".shorts-item{flex:0 0 48%;max-width:none;}"
+                ".shorts-container{gap:4px 4px;}"
+                "}"
+                "</style>"
+                f'<div class="shorts-container">{"".join(html_items)}</div>'
+            )
+            st.markdown(html, unsafe_allow_html=True)
+
         elif mode == "channel_list":
-            st.subheader("📺 채널검색 리스트")
-        else:
-            st.subheader("📊 검색 결과 리스트")
-
-        if view_mode == "shorts":
-            if mode in ("general", "trend", "random_trend", "channel_videos"):
-                html_items = []
-                for _, row in df_display.iterrows():
-                    thumb = str(row.get("썸네일", "") or "")
-                    if not thumb:
-                        continue
-                    ch = str(row.get("채널명", "") or "")
-                    link = str(row.get("링크", "") or "")
-                    channel_html = (
-                        f'<div class="shorts-meta-channel">{ch}</div>' if ch else ""
-                    )
-                    link_html = (
-                        f'<a href="{link}" target="_blank" class="shorts-meta-link">영상 열기</a>'
-                        if link
-                        else ""
-                    )
-                    meta_html = ""
-                    if channel_html or link_html:
-                        meta_html = f'<div class="shorts-meta">{channel_html}{link_html}</div>'
-                    html_items.append(
-                        '<div class="shorts-item">'
-                        f'  <div class="shorts-frame" style="background-image:url(\'{thumb}\');"></div>'
-                        f'  {meta_html}'
-                        "</div>"
-                    )
-                html = (
-                    "<style>"
-                    ".shorts-container{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 4px;}"
-                    ".shorts-item{flex:0 0 23%;max-width:170px;}"
-                    ".shorts-frame{position:relative;width:100%;height:0;padding-bottom:177%;"
-                    "overflow:hidden;border-radius:10px;background:#000;"
-                    "background-size:cover;background-position:center center;background-repeat:no-repeat;}"
-                    ".shorts-meta{display:flex;justify-content:space-between;align-items:center;"
-                    "margin-top:2px;font-size:11px;line-height:1.2;}"
-                    ".shorts-meta-channel{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
-                    "padding-right:4px;}"
-                    ".shorts-meta-link{text-decoration:none;border:1px solid #ccc;border-radius:999px;"
-                    "padding:1px 6px;font-size:11px;}"
-                    "@media (max-width:480px){"
-                    ".shorts-item{flex:0 0 48%;max-width:none;}"
-                    ".shorts-container{gap:4px 4px;}"
-                    "}"
-                    "</style>"
-                    f'<div class="shorts-container">{"".join(html_items)}</div>'
+            thumbs = df_display["썸네일"].astype(str).tolist()
+            html_items = []
+            for url in thumbs:
+                if not url:
+                    continue
+                html_items.append(
+                    '<div class="shorts-item">'
+                    f'  <img src="{url}" class="channel-icon"/>'
+                    "</div>"
                 )
-                st.markdown(html, unsafe_allow_html=True)
+            html = (
+                "<style>"
+                ".shorts-container{display:flex;flex-wrap:wrap;justify-content:center;gap:6px 6px;}"
+                ".shorts-item{flex:0 0 22%;max-width:100px;}"
+                ".channel-icon{width:100px;height:100px;object-fit:cover;border-radius:50%;display:block;}"
+                "@media (max-width:480px){"
+                ".shorts-item{flex:0 0 25%;}"
+                ".channel-icon{width:80px;height:80px;}"
+                "}"
+                "</style>"
+                f'<div class="shorts-container">{"".join(html_items)}</div>'
+            )
+            st.markdown(html, unsafe_allow_html=True)
 
-            elif mode == "channel_list":
-                thumbs = df_display["썸네일"].astype(str).tolist()
-                html_items = []
-                for url in thumbs:
-                    if not url:
-                        continue
-                    html_items.append(
-                        '<div class="shorts-item">'
-                        f'  <img src="{url}" class="channel-icon"/>'
-                        "</div>"
-                    )
-                html = (
-                    "<style>"
-                    ".shorts-container{display:flex;flex-wrap:wrap;justify-content:center;gap:6px 6px;}"
-                    ".shorts-item{flex:0 0 22%;max-width:100px;}"
-                    ".channel-icon{width:100px;height:100px;object-fit:cover;border-radius:50%;display:block;}"
-                    "@media (max-width:480px){"
-                    ".shorts-item{flex:0 0 25%;}"
-                    ".channel-icon{width:80px;height:80px;}"
-                    "}"
-                    "</style>"
-                    f'<div class="shorts-container">{"".join(html_items)}</div>'
-                )
-                st.markdown(html, unsafe_allow_html=True)
+        st.caption("쇼츠 뷰: 이미지를 눌러도 별도 동작은 하지 않습니다.")
 
-            st.caption("쇼츠 뷰: 이미지를 눌러도 별도 동작은 하지 않습니다.")
+    elif view_mode == "grid":
+        n_cols = 3
+        cols = st.columns(n_cols)
 
-        elif view_mode == "grid":
-            n_cols = 3
-            cols = st.columns(n_cols)
+        for idx, (_, row) in enumerate(df_display.iterrows()):
+            col = cols[idx % n_cols]
+            with col:
+                if (
+                    "썸네일" in df_display.columns
+                    and isinstance(row["썸네일"], str)
+                    and row["썸네일"]
+                ):
+                    st.image(row["썸네일"], use_column_width=True)
 
-            for idx, (_, row) in enumerate(df_display.iterrows()):
-                col = cols[idx % n_cols]
-                with col:
-                    if (
-                        "썸네일" in df_display.columns
-                        and isinstance(row["썸네일"], str)
-                        and row["썸네일"]
-                    ):
-                        st.image(row["썸네일"], use_column_width=True)
-
-                    if mode == "channel_list":
-                        title = row.get("채널명", "")
-                        subs = row.get("구독자수", "")
-                        total_views = row.get("채널조회수", "")
-                        video_count = row.get("채널영상수", "")
-                        link = row.get("링크", "")
-                        st.markdown(f"**{title}**")
-                        st.caption(
-                            f"구독자: {subs} · 조회수: {total_views} · 영상수: {video_count}"
-                        )
-                        if link:
-                            st.markdown(f"[채널 열기]({link})")
+                if mode == "channel_list":
+                    title = row.get("채널명", "")
+                    subs = row.get("구독자수", "")
+                    total_views = row.get("채널조회수", "")
+                    video_count = row.get("채널영상수", "")
+                    link = row.get("링크", "")
+                    st.markdown(f"**{title}**")
+                    st.caption(f"구독자: {subs} · 조회수: {total_views} · 영상수: {video_count}")
+                    if link:
+                        st.markdown(f"[채널 열기]({link})")
+                else:
+                    title = row.get("제목", "")
+                    ch = row.get("채널명", "")
+                    views = row.get("영상조회수", "")
+                    grade = row.get("등급", "")
+                    link = row.get("링크", "")
+                    st.markdown(f"**{title}**")
+                    if isinstance(views, int):
+                        st.caption(f"등급 {grade} · {ch} · 조회수 {views:,}")
                     else:
-                        title = row.get("제목", "")
-                        ch = row.get("채널명", "")
-                        views = row.get("영상조회수", "")
-                        grade = row.get("등급", "")
-                        link = row.get("링크", "")
-                        st.markdown(f"**{title}**")
-                        if isinstance(views, int):
-                            st.caption(f"등급 {grade} · {ch} · 조회수 {views:,}")
-                        else:
-                            st.caption(f"등급 {grade} · {ch} · 조회수 {views}")
-                        if link:
-                            st.markdown(f"[영상 열기]({link})")
+                        st.caption(f"등급 {grade} · {ch} · 조회수 {views}")
+                    if link:
+                        st.markdown(f"[영상 열기]({link})")
 
-                if (idx + 1) % n_cols == 0 and (idx + 1) < len(df_display):
-                    cols = st.columns(n_cols)
+            if (idx + 1) % n_cols == 0 and (idx + 1) < len(df_display):
+                cols = st.columns(n_cols)
 
-            st.caption("👉 텍스트 링크를 눌러 새 탭에서 영상 또는 채널을 열 수 있습니다.")
+        st.caption("👉 텍스트 링크를 눌러 새 탭에서 영상 또는 채널을 열 수 있습니다.")
 
+    else:
+        # 리스트 뷰일 때의 컬럼 순서 정의
+        if mode in ("general", "trend", "random_trend", "channel_videos"):
+            # 열기(링크) 컬럼을 등급 왼쪽으로 이동
+            base_order = [
+                "링크",
+                "등급",
+                "썸네일",
+                "채널명",
+                "영상조회수",
+                "시간당클릭",
+                "영상길이",
+                "업로드시각",
+                "경과시간",
+                "제목",
+            ]
         else:
-            if mode in ("general", "trend", "random_trend", "channel_videos"):
-                base_order = [
-                    "등급",
-                    "썸네일",
-                    "채널명",
-                    "영상조회수",
-                    "시간당클릭",
-                    "영상길이",
-                    "업로드시각",
-                    "경과시간",
-                    "제목",
-                    "링크",
-                ]
-            else:
-                base_order = [
-                    "썸네일",
-                    "채널명",
-                    "구독자수",
-                    "채널조회수",
-                    "채널영상수",
-                    "링크",
-                ]
-            column_order = [c for c in base_order if c in df_display.columns]
+            base_order = [
+                "썸네일",
+                "채널명",
+                "구독자수",
+                "채널조회수",
+                "채널영상수",
+                "링크",
+            ]
+        column_order = [c for c in base_order if c in df_display.columns]
 
-            column_config = {}
-            if "링크" in df_display.columns:
-                column_config["링크"] = st.column_config.LinkColumn(
-                    "열기",
-                    display_text="열기",
-                )
-            if "썸네일" in df_display.columns:
-                column_config["썸네일"] = st.column_config.ImageColumn(
-                    "썸네일",
-                    help="썸네일 이미지",
-                    width="large",
-                )
-            if "업로드시각" in df_display.columns:
-                column_config["업로드시각"] = st.column_config.DatetimeColumn(
-                    "업로드시각",
-                    format="YYYY-MM-DD HH:mm",
-                )
-
-            if mode == "general":
-                editor_key = "video_results_editor_general"
-            elif mode in ("trend", "random_trend"):
-                editor_key = "video_results_editor_trend"
-            elif mode == "channel_videos":
-                editor_key = "video_results_editor_channel_videos"
-            elif mode == "channel_list":
-                editor_key = "channel_results_editor_keyword"
-            else:
-                editor_key = "results_editor_default"
-
-            st.data_editor(
-                df_display,
-                use_container_width=True,
-                height=620,
-                hide_index=True,
-                column_order=column_order if column_order else None,
-                column_config=column_config,
-                key=editor_key,
-                disabled=True,
-                num_rows="fixed",
+        column_config = {}
+        if "링크" in df_display.columns:
+            column_config["링크"] = st.column_config.LinkColumn(
+                "열기",
+                display_text="열기",
+            )
+        if "썸네일" in df_display.columns:
+            column_config["썸네일"] = st.column_config.ImageColumn(
+                "썸네일",
+                help="썸네일 이미지",
+                width="small",
+            )
+        if "업로드시각" in df_display.columns:
+            column_config["업로드시각"] = st.column_config.DatetimeColumn(
+                "업로드시각",
+                format="YYYY-MM-DD HH:mm",
             )
 
-            st.caption("👉 '열기' 링크를 누르면 새 탭에서 영상 또는 채널이 열립니다.")
+        if mode == "general":
+            editor_key = "video_results_editor_general"
+        elif mode in ("trend", "random_trend"):
+            editor_key = "video_results_editor_trend"
+        elif mode == "channel_videos":
+            editor_key = "video_results_editor_channel_videos"
+        elif mode == "channel_list":
+            editor_key = "channel_results_editor_keyword"
+        else:
+            editor_key = "results_editor_default"
+
+        st.data_editor(
+            df_display,
+            use_container_width=True,
+            height=620,
+            hide_index=True,
+            column_order=column_order if column_order else None,
+            column_config=column_config,
+            key=editor_key,
+            disabled=True,
+            num_rows="fixed",
+        )
+
+        st.caption("👉 '열기' 링크를 누르면 새 탭에서 영상 또는 채널이 열립니다.")
 
 st.markdown(
     """
