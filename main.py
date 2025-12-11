@@ -793,7 +793,27 @@ with st.expander("검색", expanded=True):
 
     do_search = st.button("🔍 검색 실행", use_container_width=True)
 
-view_mode_label = st.selectbox(
+df_for_chart = st.session_state.get("results_df", None)
+mode_for_chart = st.session_state.get("search_mode", None)
+if (
+    df_for_chart is not None
+    and not getattr(df_for_chart, "empty", True)
+    and mode_for_chart in ("general", "trend", "random_trend", "channel_videos")
+    and "영상조회수" in df_for_chart.columns
+    and "등급" in df_for_chart.columns
+):
+    tmp = df_for_chart.copy()
+    tmp = tmp[tmp["등급"].notna()]
+    if not tmp.empty:
+        tmp_sorted = tmp.sort_values("영상조회수")
+        grade_order = ["H", "G", "F", "E", "D", "C", "B", "A"]
+        grade_map = {g: i + 1 for i, g in enumerate(grade_order)}
+        tmp_sorted["grade_score"] = tmp_sorted["등급"].map(grade_map).fillna(0)
+        tmp_sorted["순위(조회수기준)"] = range(1, len(tmp_sorted) + 1)
+        chart_df = tmp_sorted[["순위(조회수기준)", "grade_score"]].set_index("순위(조회수기준)")
+        st.bar_chart(chart_df, height=180, use_container_width=True)
+
+view_mode_label = st.radio(
     "보기 모드",
     options=["그리드 뷰", "리스트 뷰", "쇼츠 뷰"],
     index=["그리드 뷰", "리스트 뷰", "쇼츠 뷰"].index(
@@ -803,6 +823,7 @@ view_mode_label = st.selectbox(
     in ["그리드 뷰", "리스트 뷰", "쇼츠 뷰"]
     else 0,
     key="view_mode_label",
+    horizontal=True,
 )
 
 if view_mode_label == "그리드 뷰":
@@ -1156,14 +1177,28 @@ else:
 
     if view_mode == "shorts":
         if mode in ("general", "trend", "random_trend", "channel_videos"):
-            thumbs = df_display["썸네일"].astype(str).tolist()
             html_items = []
-            for url in thumbs:
-                if not url:
+            for _, row in df_display.iterrows():
+                thumb = str(row.get("썸네일", "") or "")
+                if not thumb:
                     continue
+                ch = str(row.get("채널명", "") or "")
+                link = str(row.get("링크", "") or "")
+                channel_html = (
+                    f'<div class="shorts-meta-channel">{ch}</div>' if ch else ""
+                )
+                link_html = (
+                    f'<a href="{link}" target="_blank" class="shorts-meta-link">영상 열기</a>'
+                    if link
+                    else ""
+                )
+                meta_html = ""
+                if channel_html or link_html:
+                    meta_html = f'<div class="shorts-meta">{channel_html}{link_html}</div>'
                 html_items.append(
                     '<div class="shorts-item">'
-                    f'  <div class="shorts-frame" style="background-image:url(\'{url}\');"></div>'
+                    f'  <div class="shorts-frame" style="background-image:url(\'{thumb}\');"></div>'
+                    f'  {meta_html}'
                     "</div>"
                 )
             html = (
@@ -1173,6 +1208,12 @@ else:
                 ".shorts-frame{position:relative;width:100%;height:0;padding-bottom:177%;"
                 "overflow:hidden;border-radius:10px;background:#000;"
                 "background-size:cover;background-position:center center;background-repeat:no-repeat;}"
+                ".shorts-meta{display:flex;justify-content:space-between;align-items:center;"
+                "margin-top:2px;font-size:11px;line-height:1.2;}"
+                ".shorts-meta-channel{flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+                "padding-right:4px;}"
+                ".shorts-meta-link{text-decoration:none;border:1px solid #ccc;border-radius:999px;"
+                "padding:1px 6px;font-size:11px;}"
                 "@media (max-width:480px){"
                 ".shorts-item{flex:0 0 48%;max-width:none;}"
                 ".shorts-container{gap:4px 4px;}"
@@ -1240,7 +1281,10 @@ else:
                     grade = row.get("등급", "")
                     link = row.get("링크", "")
                     st.markdown(f"**{title}**")
-                    st.caption(f"등급 {grade} · {ch} · 조회수 {views:,}")
+                    if isinstance(views, int):
+                        st.caption(f"등급 {grade} · {ch} · 조회수 {views:,}")
+                    else:
+                        st.caption(f"등급 {grade} · {ch} · 조회수 {views}")
                     if link:
                         st.markdown(f"[영상 열기]({link})")
 
@@ -1285,6 +1329,11 @@ else:
                 "썸네일",
                 help="썸네일 이미지",
                 width="small",
+            )
+        if "업로드시각" in df_display.columns:
+            column_config["업로드시각"] = st.column_config.DatetimeColumn(
+                "업로드시각",
+                format="YYYY-MM-DD HH:mm",
             )
 
         if mode == "general":
