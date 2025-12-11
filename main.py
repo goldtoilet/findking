@@ -786,26 +786,6 @@ with st.expander("검색", expanded=True):
 
     do_search = st.button("🔍 검색 실행", use_container_width=True)
 
-view_mode_label = st.radio(
-    "보기 모드",
-    options=["그리드 뷰", "리스트 뷰", "쇼츠 뷰"],
-    index=["그리드 뷰", "리스트 뷰", "쇼츠 뷰"].index(
-        st.session_state.get("view_mode_label", "그리드 뷰")
-    )
-    if st.session_state.get("view_mode_label", "그리드 뷰")
-    in ["그리드 뷰", "리스트 뷰", "쇼츠 뷰"]
-    else 0,
-    key="view_mode_label",
-    horizontal=True,
-)
-
-if view_mode_label == "그리드 뷰":
-    view_mode = "grid"
-elif view_mode_label == "리스트 뷰":
-    view_mode = "list"
-else:
-    view_mode = "shorts"
-
 def apply_client_filters(df: pd.DataFrame, upload_period: str, min_views_label: str) -> pd.DataFrame:
     if upload_period != "제한없음" and "업로드시각" in df.columns:
         days = int(upload_period.replace("일", ""))
@@ -1129,39 +1109,17 @@ else:
         tmp = df.copy()
         tmp = tmp[tmp["등급"].notna()]
         if not tmp.empty:
-            tmp_sorted = tmp.sort_values("영상조회수")
-            grade_order = ["H", "G", "F", "E", "D", "C", "B", "A"]
-            grade_map = {g: i + 1 for i, g in enumerate(grade_order)}
-            tmp_sorted["grade_score"] = tmp_sorted["등급"].map(grade_map).fillna(0)
+            tmp_sorted = tmp.sort_values("영상조회수", ascending=False)
             tmp_sorted["순위(조회수기준)"] = range(1, len(tmp_sorted) + 1)
             chart_data = tmp_sorted[
-                ["순위(조회수기준)", "grade_score", "제목", "채널명", "영상조회수", "등급"]
+                ["순위(조회수기준)", "영상조회수", "제목", "채널명", "등급"]
             ]
-
-            grade_axis_expr = (
-                "datum.value == 1 ? 'H' : "
-                "datum.value == 2 ? 'G' : "
-                "datum.value == 3 ? 'F' : "
-                "datum.value == 4 ? 'E' : "
-                "datum.value == 5 ? 'D' : "
-                "datum.value == 6 ? 'C' : "
-                "datum.value == 7 ? 'B' : "
-                "datum.value == 8 ? 'A' : ''"
-            )
-
             chart = (
                 alt.Chart(chart_data)
                 .mark_bar()
                 .encode(
                     x=alt.X("순위(조회수기준):O", title="조회수 기준 순위"),
-                    y=alt.Y(
-                        "grade_score:Q",
-                        title="등급",
-                        axis=alt.Axis(
-                            values=[1, 2, 3, 4, 5, 6, 7, 8],
-                            labelExpr=grade_axis_expr,
-                        ),
-                    ),
+                    y=alt.Y("영상조회수:Q", title="영상조회수"),
                     tooltip=[
                         alt.Tooltip("제목:N", title="제목"),
                         alt.Tooltip("채널명:N", title="채널"),
@@ -1173,6 +1131,26 @@ else:
             )
             st.altair_chart(chart, use_container_width=True)
             st.markdown("<div style='margin-top:0.5rem;'></div>", unsafe_allow_html=True)
+
+    view_mode_label = st.radio(
+        "보기 모드",
+        options=["그리드 뷰", "리스트 뷰", "쇼츠 뷰"],
+        index=["그리드 뷰", "리스트 뷰", "쇼츠 뷰"].index(
+            st.session_state.get("view_mode_label", "그리드 뷰")
+        )
+        if st.session_state.get("view_mode_label", "그리드 뷰")
+        in ["그리드 뷰", "리스트 뷰", "쇼츠 뷰"]
+        else 0,
+        key="view_mode_label",
+        horizontal=True,
+    )
+
+    if view_mode_label == "그리드 뷰":
+        view_mode = "grid"
+    elif view_mode_label == "리스트 뷰":
+        view_mode = "list"
+    else:
+        view_mode = "shorts"
 
     df_display = df.copy()
     if "링크URL" in df_display.columns:
